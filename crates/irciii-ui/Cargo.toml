@@ -1,0 +1,26 @@
+[package]
+name = "irciii-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hot-reloadable UI worker for irciii: rendering, input handling, hooks"
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+irciii-proto.workspace = true
+promptui-core.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
