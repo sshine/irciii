@@ -33,6 +33,12 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         return;
     }
 
+    // Any key skips the startup splash.
+    if chrono::Utc::now().timestamp_millis() < state.splash_until_ms {
+        state.splash_until_ms = 0;
+        return;
+    }
+
     // ^X cycles the active target; promptui's Input does not map Ctrl+X, so
     // match the raw event before converting.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x') {
@@ -287,6 +293,10 @@ fn run_hooks(state: &mut UiState, event: &HistoryItem) {
 /// Render the full client: history, status bar, and the promptui text field
 /// (which grows with its content, up to its max height).
 pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
+    if chrono::Utc::now().timestamp_millis() < state.splash_until_ms {
+        crate::splash::render(frame);
+        return;
+    }
     let width = frame.area().width;
     let input_height = text_input::with_field(state, |field| field.required_height(width));
     let chunks = Layout::vertical([
@@ -383,6 +393,7 @@ mod tests {
 
     fn state_with_channel() -> UiState {
         let mut state = UiState::new();
+        state.splash_until_ms = 0; // tests don't want keys eaten by the splash
         state.snapshot = SessionSnapshot {
             connected_to: Some("irc.libera.chat".into()),
             nick: "sshine".into(),
