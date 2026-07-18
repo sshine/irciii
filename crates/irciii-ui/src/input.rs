@@ -47,7 +47,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("quit", "same as /exit"),
     ("quote", "<raw line> — send a raw IRC line"),
     ("topic", "<channel> [topic] — set or show the topic"),
-    ("who", "<channel|mask> — list matching users"),
+    (
+        "who",
+        "[channel|mask] — list users (default: the active channel)",
+    ),
     ("whois", "<nick> — look up a user"),
 ];
 
@@ -248,8 +251,8 @@ pub fn parse(line: &str) -> InputAction {
         "quote" if !rest.is_empty() => InputAction::Command(ClientCommand::Quote { raw: arg() }),
         "disconnect" => InputAction::Command(ClientCommand::Disconnect),
         "whois" if !rest.is_empty() => InputAction::Command(ClientCommand::Whois { nick: arg() }),
-        "who" if !rest.is_empty() => InputAction::Command(ClientCommand::Who { mask: arg() }),
-        "who" => InputAction::Error("usage: /who <channel|mask>".into()),
+        // Bare /who: the app substitutes the active channel when there is one.
+        "who" => InputAction::Command(ClientCommand::Who { mask: opt() }),
         "detach" => InputAction::Detach,
         "exit" | "quit" => InputAction::Exit(opt()),
         "help" => InputAction::Help,

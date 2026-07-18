@@ -307,8 +307,9 @@ impl Session {
                         client.send(Command::WHOIS(None, nick.clone()))
                     }
                     ClientCommand::Who { mask } => {
-                        self.pending_who = Some((mask.clone(), Vec::new()));
-                        client.send(Command::WHO(Some(mask.clone()), None))
+                        let label = mask.clone().unwrap_or_else(|| "*".to_string());
+                        self.pending_who = Some((label, Vec::new()));
+                        client.send(Command::WHO(mask.clone(), None))
                     }
                     ClientCommand::Quote { raw } => match raw.parse::<Message>() {
                         Ok(message) => client.send(message),

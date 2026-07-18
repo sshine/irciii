@@ -111,8 +111,9 @@ pub enum ClientCommand {
     },
     /// WHO a channel or mask; the reply is collected into one structured item.
     Who {
-        /// The channel or mask to list.
-        mask: String,
+        /// The channel or mask to list; `None` sends a bare WHO. The client
+        /// substitutes the active channel before sending when there is one.
+        mask: Option<String>,
     },
     /// Send a raw IRC line.
     Quote {

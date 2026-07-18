@@ -3,7 +3,7 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use irciii_proto::history::{HistoryItem, HistoryKind};
 use irciii_proto::ui_state::{QuitKind, UiState};
-use irciii_proto::wire::{ClientCommand, ClientToDaemon, DaemonToClient};
+use irciii_proto::wire::{ClientCommand, ClientToDaemon, DaemonToClient, TargetKind};
 use promptui_core::input::Input;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -140,6 +140,19 @@ fn submit_line(state: &mut UiState, line: &str) {
                     .pending
                     .push(ClientToDaemon::Command(ClientCommand::Msg { target, text }));
             }
+        }
+        // Bare /who implies the active channel; on (status) or a query it
+        // stays bare (the server decides what a plain WHO means).
+        InputAction::Command(ClientCommand::Who { mask: None }) => {
+            let mask = state
+                .active_target
+                .checked_sub(1)
+                .and_then(|i| state.snapshot.targets.get(i))
+                .filter(|t| t.kind == TargetKind::Channel)
+                .map(|t| t.name.clone());
+            state
+                .pending
+                .push(ClientToDaemon::Command(ClientCommand::Who { mask }));
         }
         InputAction::Command(cmd) => {
             state.pending.push(ClientToDaemon::Command(cmd));
@@ -394,6 +407,41 @@ mod tests {
         }
         handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(state.input, "zfnmxt: hi n_ko ");
+    }
+
+    #[test]
+    fn bare_who_implies_active_channel_but_not_query() {
+        // Active channel: /who fills in the channel name.
+        let mut state = state_with_channel();
+        for c in "/who".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            state.pending,
+            vec![ClientToDaemon::Command(ClientCommand::Who {
+                mask: Some("#diku".into()),
+            })]
+        );
+
+        // Active query: /who stays bare.
+        let mut state = state_with_channel();
+        state.snapshot.targets.push(TargetInfo {
+            name: "n_ko".into(),
+            kind: TargetKind::Query,
+            modes: String::new(),
+            topic: None,
+            members: Vec::new(),
+        });
+        state.active_target = 2;
+        for c in "/who".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            state.pending,
+            vec![ClientToDaemon::Command(ClientCommand::Who { mask: None })]
+        );
     }
 
     #[test]
