@@ -64,6 +64,9 @@ pub struct UiState {
     pub pending: Vec<ClientToDaemon>,
     /// Set by the worker when the user asked to detach or exit.
     pub should_quit: QuitKind,
+    /// History length already accounted for by scroll anchoring: while
+    /// scrolled up, new arrivals grow `scroll_offset` so the view stays put.
+    pub anchored_len: usize,
 }
 
 impl UiState {
@@ -88,9 +91,17 @@ impl UiState {
         }
     }
 
-    /// Cycle to the next target (wrapping past the end back to "(status)").
+    /// Cycle to the next target. "(status)" is only part of the cycle when
+    /// there are no channels or queries; otherwise cycling wraps within them.
     pub fn cycle_target(&mut self) {
-        self.active_target = (self.active_target + 1) % (self.snapshot.targets.len() + 1);
+        let targets = self.snapshot.targets.len();
+        self.active_target = if targets == 0 {
+            0
+        } else if self.active_target >= targets {
+            1
+        } else {
+            self.active_target + 1
+        };
     }
 }
 
@@ -111,10 +122,27 @@ mod tests {
             kind: TargetKind::Channel,
             modes: "+n".into(),
             topic: None,
+            members: Vec::new(),
         });
         st.cycle_target();
         assert_eq!(st.active_target_name(), "#diku");
         st.cycle_target();
-        assert_eq!(st.active_target_name(), "(status)");
+        assert_eq!(
+            st.active_target_name(),
+            "#diku",
+            "(status) is skipped while targets exist"
+        );
+
+        st.snapshot.targets.push(TargetInfo {
+            name: "n_ko".into(),
+            kind: TargetKind::Query,
+            modes: String::new(),
+            topic: None,
+            members: Vec::new(),
+        });
+        st.cycle_target();
+        assert_eq!(st.active_target_name(), "n_ko");
+        st.cycle_target();
+        assert_eq!(st.active_target_name(), "#diku", "wraps within targets");
     }
 }

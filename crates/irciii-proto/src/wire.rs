@@ -104,6 +104,11 @@ pub enum ClientCommand {
         /// New topic, or `None` to query.
         topic: Option<String>,
     },
+    /// WHOIS a nick; the reply is collected into one structured item.
+    Whois {
+        /// The nick to look up.
+        nick: String,
+    },
     /// Send a raw IRC line.
     Quote {
         /// The raw line.
@@ -171,6 +176,9 @@ pub struct TargetInfo {
     pub modes: String,
     /// Channel topic, if known.
     pub topic: Option<String>,
+    /// Nicks present in the channel (without membership prefixes), used for
+    /// tab completion.
+    pub members: Vec<String>,
 }
 
 /// The kind of a target buffer.

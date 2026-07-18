@@ -38,14 +38,18 @@ pub fn render(state: &UiState, area: Rect, buf: &mut Buffer) {
         }
     }
 
-    // --- Left segments: clock · nick(+modes) ---
+    // --- Left segments: clock · N:channel(+modes) ---
     let clock = Local::now().format(&state.ts_format).to_string();
-    let nick = if state.snapshot.user_modes.is_empty() {
-        state.snapshot.nick.clone()
+    let target = if state.active_target == 0 {
+        "(status)".to_string()
     } else {
-        format!("{}({})", state.snapshot.nick, state.snapshot.user_modes)
+        match state.snapshot.targets.get(state.active_target - 1) {
+            Some(t) if t.modes.is_empty() => format!("{}:{}", state.active_target, t.name),
+            Some(t) => format!("{}:{}({})", state.active_target, t.name, t.modes),
+            None => "(status)".to_string(),
+        }
     };
-    let left: Vec<(&str, Style)> = vec![(&clock, clock_style), (SEP, muted), (&nick, text_style)];
+    let left: Vec<(&str, Style)> = vec![(&clock, clock_style), (SEP, muted), (&target, text_style)];
 
     let mut x = area.x;
     let x_max = area.x + area.width;
@@ -62,21 +66,23 @@ pub fn render(state: &UiState, area: Rect, buf: &mut Buffer) {
         }
     }
 
-    // --- Right segments: server · N:target(+modes), degrading left-first ---
-    let target = if state.active_target == 0 {
-        format!("{}:(status)", state.active_target)
+    // --- Right segments: nick(+modes) · "N below" while scrolled ---
+    let nick = if state.snapshot.user_modes.is_empty() {
+        state.snapshot.nick.clone()
     } else {
-        match state.snapshot.targets.get(state.active_target - 1) {
-            Some(t) if t.modes.is_empty() => format!("{}:{}", state.active_target, t.name),
-            Some(t) => format!("{}:{}({})", state.active_target, t.name, t.modes),
-            None => format!("{}:(status)", state.active_target),
-        }
+        format!("{}({})", state.snapshot.nick, state.snapshot.user_modes)
     };
+    let below = (state.scroll_offset > 0).then(|| format!("{} below", state.scroll_offset));
     let mut parts: Vec<&str> = Vec::new();
-    if let Some(server) = &state.snapshot.connected_to {
-        parts.push(server);
+    if !nick.is_empty() {
+        parts.push(&nick);
     }
-    parts.push(&target);
+    if let Some(below) = &below {
+        parts.push(below);
+    }
+    if parts.is_empty() {
+        return;
+    }
 
     let right_text = loop {
         let candidate = parts.join(SEP);
@@ -89,11 +95,21 @@ pub fn render(state: &UiState, area: Rect, buf: &mut Buffer) {
             return; // nothing fits
         }
     };
+    // The "N below" scroll indicator is highlighted; the rest stays muted.
+    let highlight_from = below
+        .as_ref()
+        .filter(|b| right_text.ends_with(b.as_str()))
+        .map(|b| right_text.chars().count() - b.chars().count())
+        .unwrap_or(usize::MAX);
+    let warn = Style::default()
+        .fg(theme.warning)
+        .bg(theme.bg)
+        .add_modifier(Modifier::BOLD);
     let right_start = x_max.saturating_sub(right_text.chars().count() as u16);
-    for (rx, ch) in (right_start..).zip(right_text.chars()) {
+    for (i, (rx, ch)) in (right_start..).zip(right_text.chars()).enumerate() {
         if let Some(cell) = buf.cell_mut((rx, area.y)) {
             cell.set_char(ch);
-            cell.set_style(muted);
+            cell.set_style(if i >= highlight_from { warn } else { muted });
         }
     }
 }

@@ -45,12 +45,18 @@ fn lines_from_bottom(state: &mut UiState, width: u16, opts: &RenderOpts, limit: 
     total
 }
 
-/// Clamp the scroll offset so we cannot scroll past the oldest line.
+/// Clamp the scroll offset so we cannot scroll past the oldest line, and
+/// anchor the view while scrolled: new arrivals grow the offset so the
+/// visible lines stay put (and the status bar's "below" count grows).
 pub fn clamp_scroll(state: &mut UiState, area_width: u16, area_height: u16) {
-    let opts = RenderOpts {
-        ts_format: state.ts_format.clone(),
-    };
+    let opts = RenderOpts::from_state(state);
     refresh_heights(state, area_width);
+    if state.scroll_offset > 0 {
+        for idx in state.anchored_len..state.history.len() {
+            state.scroll_offset += height_of(state, idx, area_width, &opts) as usize;
+        }
+    }
+    state.anchored_len = state.history.len();
     let viewport = area_height as usize;
     let want = state.scroll_offset + viewport;
     let available = lines_from_bottom(state, area_width, &opts, want + 1);
@@ -62,9 +68,7 @@ pub fn render(state: &mut UiState, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let opts = RenderOpts {
-        ts_format: state.ts_format.clone(),
-    };
+    let opts = RenderOpts::from_state(state);
     refresh_heights(state, area.width);
 
     let viewport = area.height as usize;

@@ -125,4 +125,44 @@ pub enum HistoryKind {
         /// The error text.
         text: String,
     },
+    /// A collected WHOIS reply, rendered as one block.
+    Whois(WhoisInfo),
+    /// The `/help` command overview, rendered as one block.
+    Help,
+}
+
+impl HistoryKind {
+    /// Whether `/clear` removes this item from the log.
+    pub fn is_clearable(&self) -> bool {
+        matches!(self, HistoryKind::Whois(_) | HistoryKind::Help)
+    }
+}
+
+/// A WHOIS reply assembled from its numeric replies (RFC 1459 / modern
+/// ircdocs: 301, 307, 311, 312, 313, 317, 318, 319, 330, 338, 378, 379, 671).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhoisInfo {
+    /// The nick the WHOIS was about.
+    pub nick: String,
+    /// `user@host` from RPL_WHOISUSER (311).
+    pub userhost: Option<String>,
+    /// Realname from RPL_WHOISUSER (311).
+    pub realname: Option<String>,
+    /// Server and its info string from RPL_WHOISSERVER (312).
+    pub server: Option<String>,
+    /// Services account from RPL_WHOISACCOUNT (330).
+    pub account: Option<String>,
+    /// Channels from RPL_WHOISCHANNELS (319), with membership prefixes.
+    pub channels: Vec<String>,
+    /// Seconds idle from RPL_WHOISIDLE (317).
+    pub idle_secs: Option<u64>,
+    /// Signon unix time from RPL_WHOISIDLE (317).
+    pub signon_ts: Option<i64>,
+    /// Away message from RPL_AWAY (301).
+    pub away: Option<String>,
+    /// Free-form extra lines (313 operator, 307 registered, 338 actual host,
+    /// 378 connecting from, 379 modes, 671 secure connection, ...).
+    pub lines: Vec<String>,
+    /// Error instead of a reply (e.g. 401 no such nick).
+    pub error: Option<String>,
 }

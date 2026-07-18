@@ -50,7 +50,18 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         Input::Up if !state.input.contains('\n') => history_recall(state, Direction::Back),
         Input::Down if !state.input.contains('\n') => history_recall(state, Direction::Forward),
         Input::Tab => {
-            if let Some(completed) = crate::input::complete_command(&state.input) {
+            // /command completion first; otherwise complete the last word
+            // against the active channel's members.
+            let completed = crate::input::complete_command(&state.input).or_else(|| {
+                let members = state
+                    .active_target
+                    .checked_sub(1)
+                    .and_then(|i| state.snapshot.targets.get(i))
+                    .map(|t| t.members.clone())
+                    .unwrap_or_default();
+                crate::input::complete_nick(&state.input, &members)
+            });
+            if let Some(completed) = completed {
                 state.input = completed;
                 // with_field sees the mismatch and rebuilds, cursor at end.
             }
@@ -141,15 +152,14 @@ fn submit_line(state: &mut UiState, line: &str) {
             state.pending.push(ClientToDaemon::Exit);
             state.should_quit = QuitKind::Exit;
         }
-        InputAction::Help => {
-            for line in crate::input::HELP {
-                emit_local(
-                    state,
-                    HistoryKind::ClientStatus {
-                        text: (*line).to_string(),
-                    },
-                );
-            }
+        InputAction::Help => emit_local(state, HistoryKind::Help),
+        InputAction::Clear => {
+            // Remove clearable blocks (whois, help) from the log entirely.
+            state.history.retain(|item| !item.kind.is_clearable());
+            state.heights.clear();
+            state.heights.resize(state.history.len(), None);
+            state.anchored_len = state.history.len();
+            state.scroll_offset = 0;
         }
         InputAction::Error(text) => emit_local(state, HistoryKind::Error { text }),
     }
@@ -165,9 +175,9 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
             if state.active_target > state.snapshot.targets.len() {
                 state.active_target = 0;
             }
-            // Convenience: when the first target appears and we're on
-            // (status), follow it (irssi switches to a channel on join).
-            if state.active_target == 0 && state.snapshot.targets.len() == 1 {
+            // (status) is not part of the cycle while targets exist: follow
+            // the first target whenever we're sitting on (status).
+            if state.active_target == 0 && !state.snapshot.targets.is_empty() {
                 state.active_target = 1;
             }
         }
@@ -234,6 +244,62 @@ pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
             frame.set_cursor_position(pos);
         }
     });
+
+    render_command_overlay(state, frame, chunks[0]);
+}
+
+/// While typing a `/command`, overlay the matching commands (with their
+/// one-line summaries) just above the input area; the list narrows as more
+/// characters are typed.
+fn render_command_overlay(
+    state: &UiState,
+    frame: &mut Frame<'_>,
+    history_area: ratatui::layout::Rect,
+) {
+    let Some(matches) = crate::input::command_matches(&state.input) else {
+        return;
+    };
+    if matches.is_empty() {
+        return;
+    }
+    let theme = promptui_core::theme::Theme::default();
+    let rows = (matches.len() as u16).min(history_area.height);
+    let area = ratatui::layout::Rect::new(
+        history_area.x,
+        history_area.bottom().saturating_sub(rows),
+        history_area.width,
+        rows,
+    );
+    let bg = ratatui::style::Style::default().bg(theme.element_bg);
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(bg);
+            }
+        }
+    }
+    for (row, (name, summary)) in matches.iter().take(rows as usize).enumerate() {
+        let line = ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                format!(" /{name:<12}"),
+                ratatui::style::Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.element_bg)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            ratatui::text::Span::styled(
+                (*summary).to_string(),
+                ratatui::style::Style::default()
+                    .fg(theme.text_muted)
+                    .bg(theme.element_bg),
+            ),
+        ]);
+        line.render(
+            ratatui::layout::Rect::new(area.x, area.y + row as u16, area.width, 1),
+            frame.buffer_mut(),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -262,6 +328,7 @@ mod tests {
                 kind: TargetKind::Channel,
                 modes: "+n".into(),
                 topic: None,
+                members: Vec::new(),
             }],
         };
         state.active_target = 1;
@@ -289,10 +356,67 @@ mod tests {
     fn ctrl_x_cycles_target() {
         let mut state = state_with_channel();
         assert_eq!(state.active_target_name(), "#diku");
-        handle_event(&mut state, &key(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        assert_eq!(state.active_target_name(), "(status)");
+        // (status) is skipped while at least one target exists.
         handle_event(&mut state, &key(KeyCode::Char('x'), KeyModifiers::CONTROL));
         assert_eq!(state.active_target_name(), "#diku");
+
+        state.snapshot.targets.push(TargetInfo {
+            name: "n_ko".into(),
+            kind: TargetKind::Query,
+            modes: String::new(),
+            topic: None,
+            members: Vec::new(),
+        });
+        handle_event(&mut state, &key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(state.active_target_name(), "n_ko");
+        handle_event(&mut state, &key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(state.active_target_name(), "#diku");
+    }
+
+    #[test]
+    fn tab_completes_nick_in_channel() {
+        let mut state = state_with_channel();
+        state.snapshot.targets[0].members = vec![
+            "sshine".into(),
+            "zfnmxt".into(),
+            "n_ko".into(),
+            "concieggs".into(),
+        ];
+        // At line start: unique match gets ": ".
+        for c in "zfn".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.input, "zfnmxt: ");
+        // Mid-line: unique match gets a space.
+        for c in "hi n_".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.input, "zfnmxt: hi n_ko ");
+    }
+
+    #[test]
+    fn clear_removes_clearable_blocks() {
+        let mut state = state_with_channel();
+        emit_local(&mut state, HistoryKind::Help);
+        emit_local(
+            &mut state,
+            HistoryKind::ClientStatus {
+                text: "keep".into(),
+            },
+        );
+        assert_eq!(state.history.len(), 2);
+        for c in "/clear".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(state.history.len(), 1, "help block removed, status kept");
+        assert!(matches!(
+            state.history[0].kind,
+            HistoryKind::ClientStatus { .. }
+        ));
+        assert_eq!(state.heights.len(), 1);
     }
 
     #[test]

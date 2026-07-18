@@ -15,29 +15,56 @@ pub enum InputAction {
     Exit(Option<String>),
     /// Show the command overview (`/help`).
     Help,
+    /// Remove clearable blocks (whois, help) from the log (`/clear`).
+    Clear,
     /// Local error (bad syntax, unknown command).
     Error(String),
 }
 
-/// All slash commands, for tab completion.
-pub const COMMANDS: &[&str] = &[
-    "connect",
-    "join",
-    "part",
-    "nick",
-    "msg",
-    "notice",
-    "mode",
-    "query",
-    "names",
-    "topic",
-    "quote",
-    "disconnect",
-    "detach",
-    "exit",
-    "quit",
-    "help",
+/// All slash commands with a one-line summary, for tab completion, the
+/// `/help` block, and the command overlay shown while typing a `/command`.
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("clear", "remove whois/help blocks from the log"),
+    (
+        "connect",
+        "[-notls] <server> [port] [nick] — connect (TLS by default)",
+    ),
+    (
+        "detach",
+        "close the client, keep the daemon (irciii --attach <id>)",
+    ),
+    ("disconnect", "leave the server, keep the session"),
+    ("exit", "quit IRC and terminate daemon and client"),
+    ("help", "show this command overview"),
+    ("join", "<channel> [key] — join a channel"),
+    ("mode", "<target> [modes] — set or query modes"),
+    ("msg", "<target> <text> — send a message"),
+    ("names", "[channel] — list who is in a channel"),
+    ("nick", "<nick> — change nick"),
+    ("notice", "<target> <text> — send a notice"),
+    ("part", "<channel> [reason] — leave a channel"),
+    ("query", "<nick> — open a query buffer"),
+    ("quit", "same as /exit"),
+    ("quote", "<raw line> — send a raw IRC line"),
+    ("topic", "<channel> [topic] — set or show the topic"),
+    ("whois", "<nick> — look up a user"),
 ];
+
+/// Commands matching a partial `/prefix` (the overlay's contents). `None`
+/// when the input is not a bare `/command` prefix.
+pub fn command_matches(input: &str) -> Option<Vec<(&'static str, &'static str)>> {
+    let prefix = input.strip_prefix('/')?;
+    if prefix.contains(char::is_whitespace) || input.starts_with("//") {
+        return None;
+    }
+    Some(
+        COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .copied()
+            .collect(),
+    )
+}
 
 /// Complete a partial `/command` to the longest common prefix of all matches;
 /// a unique match gets a trailing space. Returns `None` when nothing matches
@@ -49,8 +76,8 @@ pub fn complete_command(input: &str) -> Option<String> {
     }
     let matches: Vec<&str> = COMMANDS
         .iter()
-        .filter(|cmd| cmd.starts_with(prefix))
-        .copied()
+        .map(|(name, _)| *name)
+        .filter(|name| name.starts_with(prefix))
         .collect();
     match matches.as_slice() {
         [] => None,
@@ -70,17 +97,44 @@ pub fn complete_command(input: &str) -> Option<String> {
     }
 }
 
-/// One-line-per-command help text shown by `/help`.
-pub const HELP: &[&str] = &[
-    "/connect [-notls] <server> [port] [nick] — connect (TLS by default)",
-    "/join <channel> [key]   /part <channel> [reason]   /names [channel]",
-    "/msg <target> <text>   /notice <target> <text>   /query <nick>",
-    "/nick <nick>   /mode <target> [modes]   /topic <channel> [topic]",
-    "/quote <raw line>   /disconnect — leave the server, keep the session",
-    "/detach — close the client, keep the daemon (reattach with --attach <id>)",
-    "/exit, /quit — quit IRC and terminate daemon and client",
-    "^X cycles the active target; PgUp/PgDn scroll the history",
-];
+/// Complete the last word of `input` against channel members. At the start
+/// of a line a unique match gets `": "` appended, elsewhere a space.
+pub fn complete_nick(input: &str, members: &[String]) -> Option<String> {
+    let last_line = input.rsplit('\n').next().unwrap_or(input);
+    let word_start = last_line
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let word = &last_line[word_start..];
+    if word.is_empty() || word.starts_with('/') {
+        return None;
+    }
+    let matches: Vec<&str> = members
+        .iter()
+        .map(String::as_str)
+        .filter(|m| m.to_lowercase().starts_with(&word.to_lowercase()))
+        .collect();
+    let head = &input[..input.len() - word.len()];
+    match matches.as_slice() {
+        [] => None,
+        [only] => {
+            let suffix = if word_start == 0 { ": " } else { " " };
+            Some(format!("{head}{only}{suffix}"))
+        }
+        [first, rest @ ..] => {
+            let mut lcp = first.len();
+            for m in rest {
+                lcp = first
+                    .bytes()
+                    .zip(m.bytes())
+                    .take(lcp)
+                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+                    .count();
+            }
+            (lcp > word.len()).then(|| format!("{head}{}", &first[..lcp]))
+        }
+    }
+}
 
 fn args2(rest: &str) -> Option<(String, String)> {
     let rest = rest.trim();
@@ -192,9 +246,11 @@ pub fn parse(line: &str) -> InputAction {
         },
         "quote" if !rest.is_empty() => InputAction::Command(ClientCommand::Quote { raw: arg() }),
         "disconnect" => InputAction::Command(ClientCommand::Disconnect),
+        "whois" if !rest.is_empty() => InputAction::Command(ClientCommand::Whois { nick: arg() }),
         "detach" => InputAction::Detach,
         "exit" | "quit" => InputAction::Exit(opt()),
         "help" => InputAction::Help,
+        "clear" => InputAction::Clear,
         other => InputAction::Error(format!("unknown command: /{other}")),
     }
 }

@@ -6,7 +6,7 @@
 //! server (M4) — the transport is somebody else's problem.
 
 use irc::proto::{Command, Message, Response};
-use irciii_proto::history::{HistoryItem, HistoryKind};
+use irciii_proto::history::{HistoryItem, HistoryKind, WhoisInfo};
 use irciii_proto::wire::{
     ClientCommand, ClientToDaemon, DaemonToClient, SessionSnapshot, TargetInfo, TargetKind,
 };
@@ -35,6 +35,8 @@ pub struct Session {
     linelen: Option<usize>,
     /// Byte length of our own `nick!user@host` prefix, once observed.
     our_prefix_len: Option<usize>,
+    /// WHOIS reply being assembled from numeric replies, if one is in flight.
+    pending_whois: Option<WhoisInfo>,
 }
 
 impl Session {
@@ -48,6 +50,7 @@ impl Session {
             tx,
             linelen: None,
             our_prefix_len: None,
+            pending_whois: None,
         }
     }
 
@@ -278,6 +281,7 @@ impl Session {
                                 kind: TargetKind::Query,
                                 modes: String::new(),
                                 topic: None,
+                                members: Vec::new(),
                             });
                             self.push_state().await;
                         }
@@ -291,6 +295,13 @@ impl Session {
                     }
                     ClientCommand::Topic { channel, topic } => {
                         client.send(Command::TOPIC(channel.clone(), topic.clone()))
+                    }
+                    ClientCommand::Whois { nick } => {
+                        self.pending_whois = Some(WhoisInfo {
+                            nick: nick.clone(),
+                            ..WhoisInfo::default()
+                        });
+                        client.send(Command::WHOIS(None, nick.clone()))
                     }
                     ClientCommand::Quote { raw } => match raw.parse::<Message>() {
                         Ok(message) => client.send(message),
@@ -338,9 +349,72 @@ impl Session {
             }
         };
         self.track_state(&message).await;
+        if self.absorb_whois(&message).await {
+            return;
+        }
         if let Some(kind) = translate(&message) {
             self.emit(kind).await;
         }
+    }
+
+    /// Absorb WHOIS numeric replies into the pending [`WhoisInfo`]; returns
+    /// true when the message was consumed. Codes per RFC 1459 and the modern
+    /// ircdocs: 301 away, 311 user, 312 server, 317 idle, 318 end, 319
+    /// channels, 330 account, 401 no-such-nick, plus free-form informational
+    /// lines (307, 313, 338, 378, 379, 671, ...).
+    async fn absorb_whois(&mut self, message: &Message) -> bool {
+        let Some(whois) = &mut self.pending_whois else {
+            return false;
+        };
+        // Known numerics come as Response; ones the irc crate doesn't model
+        // (330, 338, 378, 379, 671, ...) come as Raw with a numeric name.
+        let (code, args): (u16, &[String]) = match &message.command {
+            Command::Response(response, args) => (*response as u16, args),
+            Command::Raw(cmd, args) => match cmd.parse() {
+                Ok(code) => (code, args),
+                Err(_) => return false,
+            },
+            _ => return false,
+        };
+        // Whois numerics carry the queried nick as the second argument.
+        let about_nick = args
+            .get(1)
+            .is_some_and(|n| n.eq_ignore_ascii_case(&whois.nick));
+        if !about_nick {
+            return false;
+        }
+        let rest = |from: usize| args.get(from..).unwrap_or_default().join(" ");
+        match code {
+            301 => whois.away = Some(rest(2)),
+            311 => {
+                if args.len() >= 4 {
+                    whois.userhost = Some(format!("{}@{}", args[2], args[3]));
+                }
+                whois.realname = args.last().cloned();
+            }
+            312 => whois.server = Some(rest(2)),
+            317 => {
+                whois.idle_secs = args.get(2).and_then(|s| s.parse().ok());
+                whois.signon_ts = args.get(3).and_then(|s| s.parse().ok());
+            }
+            319 => {
+                whois
+                    .channels
+                    .extend(rest(2).split_whitespace().map(str::to_string));
+            }
+            330 => whois.account = args.get(2).cloned(),
+            401 => whois.error = Some(rest(2)),
+            318 => {
+                let info = self.pending_whois.take().unwrap_or_default();
+                self.emit(HistoryKind::Whois(info)).await;
+            }
+            // Informational one-liners: operator (313), registered (307),
+            // actual host (338), connecting from (378), modes (379),
+            // secure connection (671), and anything similarly shaped.
+            307 | 313 | 335 | 338 | 378 | 379 | 671 => whois.lines.push(rest(2)),
+            _ => return false,
+        }
+        true
     }
 
     /// Update the snapshot from a server message; pushes state when it changes.
@@ -368,24 +442,91 @@ impl Session {
                     }
                 }
             }
-            Command::JOIN(channel, ..) if from_us => {
-                if !self.snapshot.targets.iter().any(|t| t.name == *channel) {
+            Command::JOIN(channel, ..) => {
+                if from_us && !self.snapshot.targets.iter().any(|t| t.name == *channel) {
                     self.snapshot.targets.push(TargetInfo {
                         name: channel.clone(),
                         kind: TargetKind::Channel,
                         modes: String::new(),
                         topic: None,
+                        members: Vec::new(),
                     });
+                }
+                if let (Some(nick), Some(target)) = (
+                    message.source_nickname(),
+                    self.snapshot
+                        .targets
+                        .iter_mut()
+                        .find(|t| t.name == *channel),
+                ) && !target.members.iter().any(|m| m == nick)
+                {
+                    target.members.push(nick.to_string());
+                }
+                changed = true;
+            }
+            Command::PART(channel, _) => {
+                if from_us {
+                    self.snapshot.targets.retain(|t| t.name != *channel);
+                } else if let (Some(nick), Some(target)) = (
+                    message.source_nickname(),
+                    self.snapshot
+                        .targets
+                        .iter_mut()
+                        .find(|t| t.name == *channel),
+                ) {
+                    target.members.retain(|m| m != nick);
+                }
+                changed = true;
+            }
+            Command::QUIT(_) => {
+                if let Some(nick) = message.source_nickname() {
+                    for target in &mut self.snapshot.targets {
+                        target.members.retain(|m| m != nick);
+                    }
                     changed = true;
                 }
             }
-            Command::PART(channel, _) if from_us => {
-                self.snapshot.targets.retain(|t| t.name != *channel);
+            Command::KICK(channel, kicked, _) => {
+                if kicked.split(',').any(|k| k == self.snapshot.nick) {
+                    self.snapshot.targets.retain(|t| t.name != *channel);
+                } else if let Some(target) = self
+                    .snapshot
+                    .targets
+                    .iter_mut()
+                    .find(|t| t.name == *channel)
+                {
+                    target
+                        .members
+                        .retain(|m| !kicked.split(',').any(|k| k == m));
+                }
                 changed = true;
             }
-            Command::NICK(new) if from_us => {
-                self.snapshot.nick = new.clone();
+            Command::NICK(new) => {
+                if from_us {
+                    self.snapshot.nick = new.clone();
+                }
+                if let Some(old) = message.source_nickname() {
+                    for target in &mut self.snapshot.targets {
+                        for member in &mut target.members {
+                            if member == old {
+                                *member = new.clone();
+                            }
+                        }
+                    }
+                }
                 changed = true;
+            }
+            // NAMES replies populate channel membership (prefixes stripped).
+            Command::Response(Response::RPL_NAMREPLY, args) if args.len() >= 4 => {
+                if let Some(target) = self.snapshot.targets.iter_mut().find(|t| t.name == args[2]) {
+                    for name in args[3].split_whitespace() {
+                        let nick = name.trim_start_matches(['@', '+', '%', '&', '~']);
+                        if !nick.is_empty() && !target.members.iter().any(|m| m == nick) {
+                            target.members.push(nick.to_string());
+                        }
+                    }
+                    changed = true;
+                }
             }
             Command::UserMODE(target, modes) if *target == self.snapshot.nick => {
                 for mode in modes {

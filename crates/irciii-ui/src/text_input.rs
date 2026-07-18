@@ -20,6 +20,8 @@ thread_local! {
 
 fn build(content: &str) -> TextField {
     let mut field = TextField::new(Theme::default());
+    // One row less than the promptui default of 3.
+    field.set_min_height(2);
     field.set_max_height(8);
     for c in content.chars() {
         let _ = field.input(if c == '\n' {
