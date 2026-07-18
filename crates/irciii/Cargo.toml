@@ -1,0 +1,28 @@
+[package]
+name = "irciii"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A minimal irssi-like terminal IRC client"
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "irciii"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+irciii-proto.workspace = true
+irciii-daemon.workspace = true
+irciii-client.workspace = true
+clap.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
