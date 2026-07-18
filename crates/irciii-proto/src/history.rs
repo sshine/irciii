@@ -134,20 +134,29 @@ pub enum HistoryKind {
         /// One entry per matched user.
         entries: Vec<WhoEntry>,
     },
+    /// The server MOTD, rendered as one card.
+    Motd {
+        /// Server the MOTD came from.
+        server: String,
+        /// The MOTD lines.
+        lines: Vec<String>,
+    },
     /// The `/help` command overview, rendered as one block.
     Help,
 }
 
 impl HistoryKind {
-    /// Whether `/clear` removes this item from the log. Clearable items are
-    /// the block-rendered ones (no timestamp gutter): whois, who, help, names.
-    pub fn is_clearable(&self) -> bool {
+    /// Whether this item is a *card*: a structured, block-rendered reply
+    /// (no timestamp gutter, bordered) that `/clear` removes from the log.
+    /// Cards: whois, who, names, motd, help.
+    pub fn is_card(&self) -> bool {
         matches!(
             self,
             HistoryKind::Whois(_)
                 | HistoryKind::Who { .. }
                 | HistoryKind::Help
                 | HistoryKind::NamesReply { .. }
+                | HistoryKind::Motd { .. }
         )
     }
 }

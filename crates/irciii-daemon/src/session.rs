@@ -39,6 +39,26 @@ pub struct Session {
     pending_whois: Option<WhoisInfo>,
     /// WHO reply being assembled, if one is in flight: (mask, entries).
     pending_who: Option<(String, Vec<WhoEntry>)>,
+    /// MOTD lines being assembled (375/372 until 376/422).
+    pending_motd: Option<Vec<String>>,
+    /// Parameters of the last (attempted) connection, for auto-reconnect.
+    last_params: Option<ConnectParams>,
+    /// True when the user asked to disconnect (suppresses auto-reconnect).
+    user_disconnected: bool,
+    /// Pending auto-reconnect: (attempt number, when to try next).
+    reconnect: Option<(usize, tokio::time::Instant)>,
+    /// Channels to rejoin once registration completes after a reconnect.
+    rejoin: Vec<String>,
+}
+
+/// Reconnect backoff: immediately, then quick retries for netsplits and
+/// server restarts, settling on a patient poll for long outages. The last
+/// entry repeats forever.
+const RECONNECT_DELAYS_SECS: &[u64] = &[0, 5, 15, 30, 60, 120, 300];
+
+fn reconnect_delay(attempt: usize) -> std::time::Duration {
+    let idx = attempt.min(RECONNECT_DELAYS_SECS.len() - 1);
+    std::time::Duration::from_secs(RECONNECT_DELAYS_SECS[idx])
 }
 
 impl Session {
@@ -54,6 +74,11 @@ impl Session {
             our_prefix_len: None,
             pending_whois: None,
             pending_who: None,
+            pending_motd: None,
+            last_params: None,
+            user_disconnected: false,
+            reconnect: None,
+            rejoin: Vec::new(),
         }
     }
 
@@ -130,9 +155,54 @@ impl Session {
                     self.handle_irc(message).await;
                     None
                 }
+                _ = sleep_until_or_pending(self.reconnect.map(|(_, at)| at)), if self.reconnect.is_some() => {
+                    self.try_reconnect().await;
+                    None
+                }
             };
             if let Some(end) = end {
                 return end;
+            }
+        }
+    }
+
+    /// One auto-reconnect attempt; on failure, schedule the next per backoff.
+    async fn try_reconnect(&mut self) {
+        let Some((attempt, _)) = self.reconnect else {
+            return;
+        };
+        let Some(params) = self.last_params.clone() else {
+            self.reconnect = None;
+            return;
+        };
+        self.status(format!(
+            "reconnecting to {} (attempt {})",
+            params.server,
+            attempt + 1
+        ))
+        .await;
+        match Connection::connect(params.clone()).await {
+            Ok(conn) => {
+                self.conn = Some(conn);
+                self.reconnect = None;
+                self.snapshot.connected_to = Some(params.server);
+                self.push_state().await;
+                if self.rejoin.is_empty() {
+                    self.status("reconnected").await;
+                } else {
+                    self.status(format!("reconnected; rejoining {}", self.rejoin.join(" ")))
+                        .await;
+                }
+                // Channels are rejoined once registration completes (001).
+            }
+            Err(err) => {
+                let next = reconnect_delay(attempt + 1);
+                self.reconnect = Some((attempt + 1, tokio::time::Instant::now() + next));
+                self.status(format!(
+                    "reconnect failed: {err}; retrying in {}s",
+                    next.as_secs()
+                ))
+                .await;
             }
         }
     }
@@ -178,14 +248,18 @@ impl Session {
                 });
                 self.status(format!("connecting to {server}:{port} (tls: {tls})"))
                     .await;
-                match Connection::connect(ConnectParams {
+                let params = ConnectParams {
                     server: server.clone(),
                     port,
                     tls,
                     nick: nick.clone(),
-                })
-                .await
-                {
+                };
+                // A fresh /connect resets any reconnect machinery.
+                self.last_params = Some(params.clone());
+                self.user_disconnected = false;
+                self.reconnect = None;
+                self.rejoin.clear();
+                match Connection::connect(params).await {
                     Ok(conn) => {
                         self.conn = Some(conn);
                         self.snapshot.connected_to = Some(server);
@@ -202,6 +276,10 @@ impl Session {
                 }
             }
             ClientCommand::Disconnect => {
+                // User-initiated: no auto-reconnect.
+                self.user_disconnected = true;
+                self.reconnect = None;
+                self.rejoin.clear();
                 if let Some(conn) = self.conn.take() {
                     let _ = conn.client().send_quit("irciii: disconnect");
                     self.snapshot.connected_to = None;
@@ -342,6 +420,14 @@ impl Session {
             end => {
                 self.conn = None;
                 self.snapshot.connected_to = None;
+                // Remember channels for the rejoin after a reconnect.
+                let channels: Vec<String> = self
+                    .snapshot
+                    .targets
+                    .iter()
+                    .filter(|t| t.kind == TargetKind::Channel)
+                    .map(|t| t.name.clone())
+                    .collect();
                 self.snapshot.targets.clear();
                 self.push_state().await;
                 match end {
@@ -353,15 +439,65 @@ impl Session {
                     }
                     _ => self.status("connection closed by server").await,
                 }
+                // Unexpected disconnect: start the reconnect backoff (first
+                // attempt immediately).
+                if !self.user_disconnected && self.last_params.is_some() {
+                    self.rejoin = channels;
+                    self.reconnect = Some((0, tokio::time::Instant::now()));
+                }
                 return;
             }
         };
         self.track_state(&message).await;
-        if self.absorb_whois(&message).await || self.absorb_who(&message).await {
+        if self.absorb_whois(&message).await
+            || self.absorb_who(&message).await
+            || self.absorb_motd(&message).await
+        {
             return;
         }
         if let Some(kind) = translate(&message) {
             self.emit(kind).await;
+        }
+    }
+
+    /// Absorb MOTD numerics (375 start, 372 lines, 376/422 end) into one
+    /// MOTD card; returns true when the message was consumed.
+    async fn absorb_motd(&mut self, message: &Message) -> bool {
+        let (code, args): (u16, &[String]) = match &message.command {
+            Command::Response(response, args) => (*response as u16, args),
+            _ => return false,
+        };
+        match code {
+            // RPL_MOTDSTART
+            375 => {
+                self.pending_motd = Some(Vec::new());
+                true
+            }
+            // RPL_MOTD: "<me> :- <text>"
+            372 => {
+                let Some(lines) = &mut self.pending_motd else {
+                    return false;
+                };
+                let line = args.get(1).map(String::as_str).unwrap_or_default();
+                let line = line.strip_prefix("- ").unwrap_or(line);
+                lines.push(line.to_string());
+                true
+            }
+            // RPL_ENDOFMOTD / ERR_NOMOTD
+            376 | 422 => {
+                if let Some(lines) = self.pending_motd.take() {
+                    let server = self
+                        .snapshot
+                        .connected_to
+                        .clone()
+                        .unwrap_or_else(|| "server".to_string());
+                    self.emit(HistoryKind::Motd { server, lines }).await;
+                    return true;
+                }
+                // 422 without a start still ends up as a card-less line.
+                code == 376
+            }
+            _ => false,
         }
     }
 
@@ -481,6 +617,14 @@ impl Session {
                 if let Some(nick) = args.first() {
                     self.snapshot.nick = nick.clone();
                     changed = true;
+                }
+                // Registration complete after a reconnect: rejoin channels.
+                if !self.rejoin.is_empty()
+                    && let Some(conn) = &self.conn
+                {
+                    for channel in self.rejoin.drain(..) {
+                        let _ = conn.client().send_join(channel);
+                    }
                 }
             }
             // ISUPPORT tokens; LINELEN caps the raw line length.
@@ -641,6 +785,15 @@ impl Session {
 async fn next_or_pending(conn: Option<&mut Connection>) -> Result<Option<Message>, String> {
     match conn {
         Some(conn) => conn.next_message().await.map_err(|err| err.to_string()),
+        None => std::future::pending().await,
+    }
+}
+
+/// Sleep until the given instant; pend forever when there is none (the
+/// select! guard prevents that arm from being polled).
+async fn sleep_until_or_pending(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
 }
