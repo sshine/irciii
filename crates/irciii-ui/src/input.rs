@@ -19,6 +19,57 @@ pub enum InputAction {
     Error(String),
 }
 
+/// All slash commands, for tab completion.
+pub const COMMANDS: &[&str] = &[
+    "connect",
+    "join",
+    "part",
+    "nick",
+    "msg",
+    "notice",
+    "mode",
+    "query",
+    "names",
+    "topic",
+    "quote",
+    "disconnect",
+    "detach",
+    "exit",
+    "quit",
+    "help",
+];
+
+/// Complete a partial `/command` to the longest common prefix of all matches;
+/// a unique match gets a trailing space. Returns `None` when nothing matches
+/// or the input is not a bare command prefix.
+pub fn complete_command(input: &str) -> Option<String> {
+    let prefix = input.strip_prefix('/')?;
+    if prefix.contains(char::is_whitespace) {
+        return None;
+    }
+    let matches: Vec<&str> = COMMANDS
+        .iter()
+        .filter(|cmd| cmd.starts_with(prefix))
+        .copied()
+        .collect();
+    match matches.as_slice() {
+        [] => None,
+        [only] => Some(format!("/{only} ")),
+        [first, rest @ ..] => {
+            let mut lcp = first.len();
+            for cmd in rest {
+                lcp = first
+                    .bytes()
+                    .zip(cmd.bytes())
+                    .take(lcp)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+            }
+            (lcp > prefix.len()).then(|| format!("/{}", &first[..lcp]))
+        }
+    }
+}
+
 /// One-line-per-command help text shown by `/help`.
 pub const HELP: &[&str] = &[
     "/connect [-notls] <server> [port] [nick] — connect (TLS by default)",

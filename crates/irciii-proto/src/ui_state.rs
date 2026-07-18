@@ -47,6 +47,12 @@ pub struct UiState {
     pub input: String,
     /// Cursor position in `input`, in bytes (always on a char boundary).
     pub cursor: usize,
+    /// Previously submitted input lines (readline-style up/down recall).
+    pub input_history: Vec<String>,
+    /// Position while browsing `input_history`; `None` = editing a new line.
+    pub input_history_pos: Option<usize>,
+    /// The in-progress line, stashed while browsing the input history.
+    pub input_draft: String,
     /// Replica of the daemon's session snapshot (status bar contents).
     pub snapshot: SessionSnapshot,
     /// Index into the targets list; 0 is the synthetic "(status)" target, so

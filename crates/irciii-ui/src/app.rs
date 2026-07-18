@@ -76,9 +76,44 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         Input::PageDown => {
             state.scroll_offset = state.scroll_offset.saturating_sub(page(state));
         }
+        Input::Up => history_recall(state, Direction::Back),
+        Input::Down => history_recall(state, Direction::Forward),
+        Input::Tab => {
+            if let Some(completed) = crate::input::complete_command(&state.input) {
+                state.input = completed;
+                state.cursor = state.input.len();
+            }
+        }
         Input::Enter => submit(state),
         _ => {}
     }
+}
+
+enum Direction {
+    Back,
+    Forward,
+}
+
+/// Readline-style input history: Up walks back through submitted lines
+/// (stashing the in-progress draft), Down walks forward and finally restores
+/// the draft.
+fn history_recall(state: &mut UiState, dir: Direction) {
+    let next = match (dir, state.input_history_pos) {
+        (Direction::Back, None) if !state.input_history.is_empty() => {
+            state.input_draft = std::mem::take(&mut state.input);
+            Some(state.input_history.len() - 1)
+        }
+        (Direction::Back, Some(pos)) => Some(pos.saturating_sub(1)),
+        (Direction::Forward, Some(pos)) if pos + 1 < state.input_history.len() => Some(pos + 1),
+        (Direction::Forward, Some(_)) => None,
+        _ => return, // Up with empty history, or Down while not browsing
+    };
+    state.input_history_pos = next;
+    state.input = match next {
+        Some(pos) => state.input_history[pos].clone(),
+        None => std::mem::take(&mut state.input_draft),
+    };
+    state.cursor = state.input.len();
 }
 
 fn prev_boundary(s: &str, cursor: usize) -> Option<usize> {
@@ -93,8 +128,13 @@ fn next_boundary(s: &str, cursor: usize) -> Option<usize> {
 fn submit(state: &mut UiState) {
     let line = std::mem::take(&mut state.input);
     state.cursor = 0;
+    state.input_history_pos = None;
+    state.input_draft.clear();
     if line.trim().is_empty() {
         return;
+    }
+    if state.input_history.last() != Some(&line) {
+        state.input_history.push(line.clone());
     }
     match parse(&line) {
         InputAction::Say(text) => {
@@ -311,6 +351,63 @@ mod tests {
         // The event itself plus the url-logger hook's status line.
         assert_eq!(state.history.len(), 2);
         assert_eq!(state.heights.len(), 2);
+    }
+
+    #[test]
+    fn input_history_up_down_with_draft() {
+        let mut state = state_with_channel();
+        for line in ["first", "second"] {
+            for c in line.chars() {
+                handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        // Start a draft, then browse back.
+        for c in "dra".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "second");
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "first");
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "first", "stops at the oldest entry");
+        handle_event(&mut state, &key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.input, "second");
+        handle_event(&mut state, &key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.input, "dra", "draft restored past the newest entry");
+        assert_eq!(state.input_history_pos, None);
+    }
+
+    #[test]
+    fn tab_completes_commands() {
+        let mut state = state_with_channel();
+        for c in "/con".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.input, "/connect ", "unique match gets a space");
+
+        state.input = "/n".into();
+        state.cursor = state.input.len();
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            state.input, "/n",
+            "ambiguous nick/notice/names: no progress"
+        );
+
+        state.input = "/no".into();
+        state.cursor = state.input.len();
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.input, "/notice ");
+
+        state.input = "/msg someone hi".into();
+        state.cursor = state.input.len();
+        handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            state.input, "/msg someone hi",
+            "no completion past the command"
+        );
     }
 
     #[test]
