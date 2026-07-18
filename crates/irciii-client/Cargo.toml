@@ -1,0 +1,29 @@
+[package]
+name = "irciii-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TUI host process for irciii: terminal, daemon connection, hot reload"
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+hot-reload = ["dep:libloading"]
+
+[lints]
+workspace = true
+
+[dependencies]
+irciii-proto.workspace = true
+irciii-ui.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libloading = { workspace = true, optional = true }
