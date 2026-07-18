@@ -41,6 +41,8 @@ impl Connection {
     pub async fn connect(params: ConnectParams) -> Result<Self, ConnectionError> {
         let config = Config {
             nickname: Some(params.nick.clone()),
+            // Survive nick collisions instead of dying during registration.
+            alt_nicks: vec![format!("{}_", params.nick), format!("{}__", params.nick)],
             server: Some(params.server.clone()),
             port: Some(params.port),
             use_tls: Some(params.tls),

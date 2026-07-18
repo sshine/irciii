@@ -282,14 +282,25 @@ impl Session {
     }
 
     /// Handle one message (or stream end) from the IRC server.
-    async fn handle_irc(&mut self, message: Option<Message>) {
-        let Some(message) = message else {
-            self.conn = None;
-            self.snapshot.connected_to = None;
-            self.snapshot.targets.clear();
-            self.push_state().await;
-            self.status("connection closed by server").await;
-            return;
+    async fn handle_irc(&mut self, message: Result<Option<Message>, String>) {
+        let message = match message {
+            Ok(Some(message)) => message,
+            end => {
+                self.conn = None;
+                self.snapshot.connected_to = None;
+                self.snapshot.targets.clear();
+                self.push_state().await;
+                match end {
+                    Err(err) => {
+                        self.emit(HistoryKind::Error {
+                            text: format!("connection error: {err}"),
+                        })
+                        .await;
+                    }
+                    _ => self.status("connection closed by server").await,
+                }
+                return;
+            }
         };
         self.track_state(&message).await;
         if let Some(kind) = translate(&message) {
@@ -384,10 +395,11 @@ impl Session {
 }
 
 /// Await the next message on a connection; pends forever when disconnected
-/// (the select! guard prevents that arm from being polled).
-async fn next_or_pending(conn: Option<&mut Connection>) -> Option<Message> {
+/// (the select! guard prevents that arm from being polled). Errors are
+/// stringified so the session can surface the reason to the user.
+async fn next_or_pending(conn: Option<&mut Connection>) -> Result<Option<Message>, String> {
     match conn {
-        Some(conn) => conn.next_message().await.unwrap_or(None),
+        Some(conn) => conn.next_message().await.map_err(|err| err.to_string()),
         None => std::future::pending().await,
     }
 }
