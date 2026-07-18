@@ -7,13 +7,13 @@ use irciii_proto::wire::{ClientCommand, ClientToDaemon, DaemonToClient};
 use promptui_core::input::Input;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+
+use promptui_core::widgets::text_field::TextFieldAction;
 
 use crate::hooks::{self, HookCtx};
 use crate::input::{InputAction, parse};
-use crate::{history_view, status_bar};
+use crate::{history_view, status_bar, text_input};
 
 /// Append a client-local line to the history.
 fn emit_local(state: &mut UiState, kind: HistoryKind) {
@@ -41,51 +41,29 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
     }
 
     match Input::from(*key) {
-        Input::Char(c) => {
-            state.input.insert(state.cursor, c);
-            state.cursor += c.len_utf8();
-        }
-        Input::Backspace => {
-            if let Some(prev) = prev_boundary(&state.input, state.cursor) {
-                state.input.remove(prev);
-                state.cursor = prev;
-            }
-        }
-        Input::Delete => {
-            if state.cursor < state.input.len() {
-                state.input.remove(state.cursor);
-            }
-        }
-        Input::Left => {
-            if let Some(prev) = prev_boundary(&state.input, state.cursor) {
-                state.cursor = prev;
-            }
-        }
-        Input::Right => {
-            if let Some(next) = next_boundary(&state.input, state.cursor) {
-                state.cursor = next;
-            }
-        }
-        Input::Home => state.cursor = 0,
-        Input::End => state.cursor = state.input.len(),
-        Input::ClearAll => {
-            state.input.clear();
-            state.cursor = 0;
-        }
         Input::PageUp => state.scroll_offset += page(state),
         Input::PageDown => {
             state.scroll_offset = state.scroll_offset.saturating_sub(page(state));
         }
-        Input::Up => history_recall(state, Direction::Back),
-        Input::Down => history_recall(state, Direction::Forward),
+        // Up/Down recall input history on a single-line draft; once the field
+        // is multi-line they navigate between its lines instead.
+        Input::Up if !state.input.contains('\n') => history_recall(state, Direction::Back),
+        Input::Down if !state.input.contains('\n') => history_recall(state, Direction::Forward),
         Input::Tab => {
             if let Some(completed) = crate::input::complete_command(&state.input) {
                 state.input = completed;
-                state.cursor = state.input.len();
+                // with_field sees the mismatch and rebuilds, cursor at end.
             }
         }
-        Input::Enter => submit(state),
-        _ => {}
+        Input::Enter => {
+            let action = text_input::with_field(state, |field| field.input(Input::Enter));
+            if let TextFieldAction::Submit(content) = action {
+                submit(state, content);
+            }
+        }
+        input => {
+            text_input::with_field(state, |field| field.input(input));
+        }
     }
 }
 
@@ -116,27 +94,27 @@ fn history_recall(state: &mut UiState, dir: Direction) {
     state.cursor = state.input.len();
 }
 
-fn prev_boundary(s: &str, cursor: usize) -> Option<usize> {
-    s[..cursor].char_indices().last().map(|(i, _)| i)
-}
-
-fn next_boundary(s: &str, cursor: usize) -> Option<usize> {
-    s[cursor..].chars().next().map(|c| cursor + c.len_utf8())
-}
-
-/// Submit the current input line.
-fn submit(state: &mut UiState) {
-    let line = std::mem::take(&mut state.input);
-    state.cursor = 0;
+/// Submit field content: it becomes one history entry, and every non-empty
+/// line becomes its own message/command (multi-line input expands into
+/// multiple messages; the daemon further splits over-long lines to the
+/// server's maximum message length).
+fn submit(state: &mut UiState, content: String) {
+    state.input.clear();
     state.input_history_pos = None;
     state.input_draft.clear();
-    if line.trim().is_empty() {
-        return;
+    if state.input_history.last() != Some(&content) {
+        state.input_history.push(content.clone());
     }
-    if state.input_history.last() != Some(&line) {
-        state.input_history.push(line.clone());
+    for line in content.lines() {
+        if !line.trim().is_empty() {
+            submit_line(state, line);
+        }
     }
-    match parse(&line) {
+}
+
+/// Dispatch one submitted line.
+fn submit_line(state: &mut UiState, line: &str) {
+    match parse(line) {
         InputAction::Say(text) => {
             if state.active_target == 0 {
                 emit_local(
@@ -233,12 +211,15 @@ fn run_hooks(state: &mut UiState, event: &HistoryItem) {
     state.pending.extend(sent);
 }
 
-/// Render the full client: history, status bar, input line.
+/// Render the full client: history, status bar, and the promptui text field
+/// (which grows with its content, up to its max height).
 pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
+    let width = frame.area().width;
+    let input_height = text_input::with_field(state, |field| field.required_height(width));
     let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(input_height),
     ])
     .split(frame.area());
 
@@ -247,19 +228,12 @@ pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
     history_view::render(state, chunks[0], frame.buffer_mut());
     status_bar::render(state, chunks[1], frame.buffer_mut());
 
-    // Input line: "[#target] input".
-    let prompt = format!("[{}] ", state.active_target_name());
-    let line = Line::from(vec![
-        Span::styled(prompt.clone(), Style::default().fg(Color::Cyan)),
-        Span::raw(state.input.clone()),
-    ]);
-    line.render(chunks[2], frame.buffer_mut());
-    let cursor_x =
-        chunks[2].x + (prompt.chars().count() + state.input[..state.cursor].chars().count()) as u16;
-    frame.set_cursor_position((
-        cursor_x.min(chunks[2].right().saturating_sub(1)),
-        chunks[2].y,
-    ));
+    text_input::with_field(state, |field| {
+        (&*field).render(chunks[2], frame.buffer_mut());
+        if let Some(pos) = field.cursor_position(chunks[2]) {
+            frame.set_cursor_position(pos);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -351,6 +325,36 @@ mod tests {
         // The event itself plus the url-logger hook's status line.
         assert_eq!(state.history.len(), 2);
         assert_eq!(state.heights.len(), 2);
+    }
+
+    #[test]
+    fn multiline_input_expands_into_multiple_messages() {
+        let mut state = state_with_channel();
+        for c in "one".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        // Alt+Enter inserts a newline (promptui Input::Newline).
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::ALT));
+        for c in "two".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            state.pending,
+            vec![
+                ClientToDaemon::Command(ClientCommand::Msg {
+                    target: "#diku".into(),
+                    text: "one".into(),
+                }),
+                ClientToDaemon::Command(ClientCommand::Msg {
+                    target: "#diku".into(),
+                    text: "two".into(),
+                }),
+            ]
+        );
+        assert!(state.input.is_empty());
+        // The whole multi-line entry is one history item.
+        assert_eq!(state.input_history, vec!["one\ntwo"]);
     }
 
     #[test]

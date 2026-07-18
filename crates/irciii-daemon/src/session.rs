@@ -31,6 +31,10 @@ pub struct Session {
     snapshot: SessionSnapshot,
     conn: Option<Connection>,
     tx: mpsc::Sender<DaemonToClient>,
+    /// LINELEN from ISUPPORT (005), if the server advertises one.
+    linelen: Option<usize>,
+    /// Byte length of our own `nick!user@host` prefix, once observed.
+    our_prefix_len: Option<usize>,
 }
 
 impl Session {
@@ -42,7 +46,26 @@ impl Session {
             snapshot: SessionSnapshot::default(),
             conn: None,
             tx,
+            linelen: None,
+            our_prefix_len: None,
         }
+    }
+
+    /// The maximum PRIVMSG/NOTICE text length for a target, derived from the
+    /// server-reported line length (ISUPPORT LINELEN, default 512) minus the
+    /// relayed line's overhead: `:<prefix> PRIVMSG <target> :<text>\r\n`.
+    /// Until we have seen our own prefix, assume the worst-case userhost.
+    fn max_text_len(&self, target: &str) -> usize {
+        let linelen = self.linelen.unwrap_or(512);
+        let prefix = self
+            .our_prefix_len
+            // nick + "!" + 10-byte user + "@" + 63-byte host
+            .unwrap_or(self.snapshot.nick.len() + 1 + 10 + 1 + 63);
+        linelen
+            .saturating_sub(1 + prefix + 1) // ":<prefix> "
+            .saturating_sub("PRIVMSG".len() + 1 + target.len() + 2) // "PRIVMSG <target> :"
+            .saturating_sub(2) // "\r\n"
+            .max(64)
     }
 
     /// Full history as `(seq, item)` pairs from a given sequence number.
@@ -192,7 +215,9 @@ impl Session {
                     .await;
                     return;
                 };
-                let client = conn.client();
+                // An owned Sender so command handling can also mutate self
+                // (history emission) while sending.
+                let client = conn.client().sender();
                 let result = match &cmd {
                     ClientCommand::Join { channel, key } => match key {
                         Some(key) => {
@@ -205,26 +230,36 @@ impl Session {
                     }
                     ClientCommand::Nick { nick } => client.send(Command::NICK(nick.clone())),
                     ClientCommand::Msg { target, text } => {
-                        let result = client.send_privmsg(target, text);
-                        if result.is_ok() {
+                        // Long lines are split to the server's maximum
+                        // message length and sent as separate messages.
+                        let mut result = Ok(());
+                        for chunk in split_text(text, self.max_text_len(target)) {
+                            result = client.send_privmsg(target, &chunk);
+                            if result.is_err() {
+                                break;
+                            }
                             // Servers don't echo our own PRIVMSG (without the
                             // echo-message cap); record it ourselves.
                             let kind = HistoryKind::Privmsg {
                                 nick: self.our_nick().to_string(),
                                 target: target.clone(),
-                                text: text.clone(),
+                                text: chunk,
                             };
                             self.emit(kind).await;
                         }
                         result
                     }
                     ClientCommand::Notice { target, text } => {
-                        let result = client.send_notice(target, text);
-                        if result.is_ok() {
+                        let mut result = Ok(());
+                        for chunk in split_text(text, self.max_text_len(target)) {
+                            result = client.send_notice(target, &chunk);
+                            if result.is_err() {
+                                break;
+                            }
                             let kind = HistoryKind::Notice {
                                 from: self.our_nick().to_string(),
                                 target: target.clone(),
-                                text: text.clone(),
+                                text: chunk,
                             };
                             self.emit(kind).await;
                         }
@@ -311,12 +346,26 @@ impl Session {
     /// Update the snapshot from a server message; pushes state when it changes.
     async fn track_state(&mut self, message: &Message) {
         let from_us = message.source_nickname() == Some(self.our_nick());
+        // Learn our own `nick!user@host` prefix length for message splitting.
+        if from_us && let Some(prefix) = &message.prefix {
+            self.our_prefix_len = Some(prefix.to_string().len());
+        }
         let mut changed = false;
         match &message.command {
             Command::Response(Response::RPL_WELCOME, args) => {
                 if let Some(nick) = args.first() {
                     self.snapshot.nick = nick.clone();
                     changed = true;
+                }
+            }
+            // ISUPPORT tokens; LINELEN caps the raw line length.
+            Command::Response(Response::RPL_ISUPPORT, args) => {
+                for token in args {
+                    if let Some(len) = token.strip_prefix("LINELEN=")
+                        && let Ok(len) = len.parse()
+                    {
+                        self.linelen = Some(len);
+                    }
                 }
             }
             Command::JOIN(channel, ..) if from_us => {
@@ -404,6 +453,33 @@ async fn next_or_pending(conn: Option<&mut Connection>) -> Result<Option<Message
     }
 }
 
+/// Split message text into chunks of at most `max_bytes`, breaking at the
+/// last space inside the budget when possible, and always on char boundaries.
+fn split_text(text: &str, max_bytes: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut rest = text;
+    while rest.len() > max_bytes {
+        // Largest char boundary within the budget.
+        let mut cut = max_bytes;
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        // Prefer the last space in the window so words stay whole — unless
+        // the cut already lands on a word boundary.
+        let breaks_word = !rest[cut..].starts_with(' ');
+        let cut = match rest[..cut].rfind(' ') {
+            Some(space) if breaks_word && space > 0 => space,
+            _ => cut,
+        };
+        chunks.push(rest[..cut].trim_end().to_string());
+        rest = rest[cut..].trim_start();
+    }
+    if !rest.is_empty() || chunks.is_empty() {
+        chunks.push(rest.to_string());
+    }
+    chunks
+}
+
 /// Apply a mode change like `+o`/`-i` to a mode string like `+Ziw`.
 fn apply_mode_string(modes: &mut String, change: &str) {
     let mut chars = change.chars();
@@ -433,6 +509,28 @@ fn apply_mode_string(modes: &mut String, change: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_text_short_passthrough() {
+        assert_eq!(split_text("hello", 100), vec!["hello"]);
+        assert_eq!(split_text("", 100), vec![""]);
+    }
+
+    #[test]
+    fn split_text_prefers_word_boundaries() {
+        let chunks = split_text("aaa bbb ccc ddd", 7);
+        assert_eq!(chunks, vec!["aaa bbb", "ccc ddd"]);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 7);
+        }
+    }
+
+    #[test]
+    fn split_text_hard_breaks_long_words_on_char_boundaries() {
+        let chunks = split_text(&"é".repeat(10), 5); // é = 2 bytes
+        assert!(chunks.iter().all(|c| c.len() <= 5 && !c.is_empty()));
+        assert_eq!(chunks.concat(), "é".repeat(10));
+    }
 
     #[test]
     fn mode_string_add_remove() {
