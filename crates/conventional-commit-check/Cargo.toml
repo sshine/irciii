@@ -1,0 +1,22 @@
+[package]
+name = "conventional-commit-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Check that a commit message follows conventional commits"
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "conventional-commit-check"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
