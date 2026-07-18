@@ -127,19 +127,42 @@ pub enum HistoryKind {
     },
     /// A collected WHOIS reply, rendered as one block.
     Whois(WhoisInfo),
+    /// A collected WHO reply, rendered as one block.
+    Who {
+        /// The mask the WHO was about (channel or pattern).
+        mask: String,
+        /// One entry per matched user.
+        entries: Vec<WhoEntry>,
+    },
     /// The `/help` command overview, rendered as one block.
     Help,
 }
 
 impl HistoryKind {
     /// Whether `/clear` removes this item from the log. Clearable items are
-    /// the block-rendered ones (no timestamp gutter): whois, help, names.
+    /// the block-rendered ones (no timestamp gutter): whois, who, help, names.
     pub fn is_clearable(&self) -> bool {
         matches!(
             self,
-            HistoryKind::Whois(_) | HistoryKind::Help | HistoryKind::NamesReply { .. }
+            HistoryKind::Whois(_)
+                | HistoryKind::Who { .. }
+                | HistoryKind::Help
+                | HistoryKind::NamesReply { .. }
         )
     }
+}
+
+/// One row of a WHO reply (RPL_WHOREPLY, 352).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhoEntry {
+    /// Nickname.
+    pub nick: String,
+    /// `user@host`.
+    pub userhost: String,
+    /// Flags: H/G (here/gone), * (oper), @/+ (channel status).
+    pub flags: String,
+    /// Realname (gecos).
+    pub realname: String,
 }
 
 /// A WHOIS reply assembled from its numeric replies (RFC 1459 / modern

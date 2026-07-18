@@ -82,6 +82,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         HistoryKind::NamesReply { channel, names } => {
             return render_names(channel, names, width);
         }
+        HistoryKind::Who { mask, entries } => return render_who(mask, entries),
         _ => {}
     }
     let (gutter_spans, text, text_style) = match &item.kind {
@@ -157,7 +158,10 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         ),
         HistoryKind::ClientStatus { text } => status_line(&ts, text.clone(), Color::Cyan),
         HistoryKind::Error { text } => status_line(&ts, text.clone(), Color::Red),
-        HistoryKind::Whois(_) | HistoryKind::Help | HistoryKind::NamesReply { .. } => {
+        HistoryKind::Whois(_)
+        | HistoryKind::Who { .. }
+        | HistoryKind::Help
+        | HistoryKind::NamesReply { .. } => {
             unreachable!("handled above")
         }
     };
@@ -205,7 +209,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
 /// Style for a mention of our own nick in message text.
 fn mention_style() -> Style {
     Style::default()
-        .fg(Color::Yellow)
+        .fg(Color::White)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -365,6 +369,34 @@ fn render_help() -> Vec<Line<'static>> {
         Span::styled("^X".to_string(), bold()),
         Span::raw(" cycles targets; PgUp/PgDn scroll; Shift/Alt+Enter for a new line".to_string()),
     ]));
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
+    lines
+}
+
+/// Render a WHO reply as an aligned table block (cleared by `/clear`).
+fn render_who(mask: &str, entries: &[irciii_proto::history::WhoEntry]) -> Vec<Line<'static>> {
+    let label = Style::default().fg(Color::Cyan);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("┌ who ", label),
+        Span::styled(mask.to_string(), bold()),
+        Span::styled(format!(" ({})", entries.len()), dim()),
+    ])];
+    let nick_w = entries.iter().map(|e| e.nick.width()).max().unwrap_or(1);
+    let flags_w = entries.iter().map(|e| e.flags.width()).max().unwrap_or(1);
+    let uh_w = entries
+        .iter()
+        .map(|e| e.userhost.width())
+        .max()
+        .unwrap_or(1);
+    for entry in entries {
+        lines.push(Line::from(vec![
+            Span::styled("│ ".to_string(), label),
+            Span::styled(format!("{:<nick_w$}  ", entry.nick), bold()),
+            Span::styled(format!("{:<flags_w$}  ", entry.flags), dim()),
+            Span::raw(format!("{:<uh_w$}  ", entry.userhost)),
+            Span::styled(entry.realname.clone(), dim()),
+        ]));
+    }
     lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
 }

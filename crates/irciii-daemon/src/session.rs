@@ -6,7 +6,7 @@
 //! server (M4) — the transport is somebody else's problem.
 
 use irc::proto::{Command, Message, Response};
-use irciii_proto::history::{HistoryItem, HistoryKind, WhoisInfo};
+use irciii_proto::history::{HistoryItem, HistoryKind, WhoEntry, WhoisInfo};
 use irciii_proto::wire::{
     ClientCommand, ClientToDaemon, DaemonToClient, SessionSnapshot, TargetInfo, TargetKind,
 };
@@ -37,6 +37,8 @@ pub struct Session {
     our_prefix_len: Option<usize>,
     /// WHOIS reply being assembled from numeric replies, if one is in flight.
     pending_whois: Option<WhoisInfo>,
+    /// WHO reply being assembled, if one is in flight: (mask, entries).
+    pending_who: Option<(String, Vec<WhoEntry>)>,
 }
 
 impl Session {
@@ -51,6 +53,7 @@ impl Session {
             linelen: None,
             our_prefix_len: None,
             pending_whois: None,
+            pending_who: None,
         }
     }
 
@@ -303,6 +306,10 @@ impl Session {
                         });
                         client.send(Command::WHOIS(None, nick.clone()))
                     }
+                    ClientCommand::Who { mask } => {
+                        self.pending_who = Some((mask.clone(), Vec::new()));
+                        client.send(Command::WHO(Some(mask.clone()), None))
+                    }
                     ClientCommand::Quote { raw } => match raw.parse::<Message>() {
                         Ok(message) => client.send(message),
                         Err(err) => {
@@ -349,11 +356,54 @@ impl Session {
             }
         };
         self.track_state(&message).await;
-        if self.absorb_whois(&message).await {
+        if self.absorb_whois(&message).await || self.absorb_who(&message).await {
             return;
         }
         if let Some(kind) = translate(&message) {
             self.emit(kind).await;
+        }
+    }
+
+    /// Absorb WHO reply numerics (352 rows, 315 end) into the pending WHO
+    /// block; returns true when the message was consumed.
+    async fn absorb_who(&mut self, message: &Message) -> bool {
+        if self.pending_who.is_none() {
+            return false;
+        }
+        let (code, args): (u16, &[String]) = match &message.command {
+            Command::Response(response, args) => (*response as u16, args),
+            Command::Raw(cmd, args) => match cmd.parse() {
+                Ok(code) => (code, args),
+                Err(_) => return false,
+            },
+            _ => return false,
+        };
+        match code {
+            // RPL_WHOREPLY: <me> <channel> <user> <host> <server> <nick> <flags> :<hop> <realname>
+            352 if args.len() >= 7 => {
+                if let Some((_, entries)) = &mut self.pending_who {
+                    let realname = args
+                        .get(7)
+                        .and_then(|hop_real| hop_real.split_once(' '))
+                        .map(|(_hop, realname)| realname.to_string())
+                        .unwrap_or_default();
+                    entries.push(WhoEntry {
+                        nick: args[5].clone(),
+                        userhost: format!("{}@{}", args[2], args[3]),
+                        flags: args[6].clone(),
+                        realname,
+                    });
+                }
+                true
+            }
+            // RPL_ENDOFWHO
+            315 => {
+                if let Some((mask, entries)) = self.pending_who.take() {
+                    self.emit(HistoryKind::Who { mask, entries }).await;
+                }
+                true
+            }
+            _ => false,
         }
     }
 
