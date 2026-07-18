@@ -23,8 +23,8 @@ irciii-client = { version = "0.1.0", path = "crates/irciii-client" }
 
 # UI
 promptui-core = { git = "https://github.com/sshine/promptui.git" }
+# graphix re-exports `image`, so decoding the embedded logo needs no direct dep.
 graphix = { git = "https://github.com/sshine/graphix.git" }
-image = { version = "0.25", default-features = false, features = ["png"] }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 unicode-width = "0.2"

@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame<'_>) {
         let (cols, rows) = match &*cache {
             Some((c, r, _)) if grid_fits(*c, *r, area) => (*c, *r),
             _ => {
-                let Ok(img) = image::load_from_memory(LOGO_PNG) else {
+                let Ok(img) = graphix::image::load_from_memory(LOGO_PNG) else {
                     return;
                 };
                 let img = img.to_rgb8();
@@ -80,7 +80,7 @@ fn cached_fit(area: Rect) -> (u32, u32) {
     }
     let (w, h) = DIMS.with(|d| {
         *d.borrow_mut().get_or_insert_with(|| {
-            image::load_from_memory(LOGO_PNG)
+            graphix::image::load_from_memory(LOGO_PNG)
                 .map(|img| img.to_rgb8().dimensions())
                 .unwrap_or((1, 1))
         })

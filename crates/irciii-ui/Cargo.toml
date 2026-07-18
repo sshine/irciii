@@ -18,7 +18,6 @@ workspace = true
 irciii-proto.workspace = true
 promptui-core.workspace = true
 graphix.workspace = true
-image.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true
