@@ -123,6 +123,16 @@ fn submit(state: &mut UiState) {
             state.pending.push(ClientToDaemon::Exit);
             state.should_quit = QuitKind::Exit;
         }
+        InputAction::Help => {
+            for line in crate::input::HELP {
+                emit_local(
+                    state,
+                    HistoryKind::ClientStatus {
+                        text: (*line).to_string(),
+                    },
+                );
+            }
+        }
         InputAction::Error(text) => emit_local(state, HistoryKind::Error { text }),
     }
 }

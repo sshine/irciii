@@ -13,9 +13,23 @@ pub enum InputAction {
     Detach,
     /// Exit client and daemon (`/exit`, `/quit`).
     Exit(Option<String>),
+    /// Show the command overview (`/help`).
+    Help,
     /// Local error (bad syntax, unknown command).
     Error(String),
 }
+
+/// One-line-per-command help text shown by `/help`.
+pub const HELP: &[&str] = &[
+    "/connect [-notls] <server> [port] [nick] — connect (TLS by default)",
+    "/join <channel> [key]   /part <channel> [reason]   /names [channel]",
+    "/msg <target> <text>   /notice <target> <text>   /query <nick>",
+    "/nick <nick>   /mode <target> [modes]   /topic <channel> [topic]",
+    "/quote <raw line>   /disconnect — leave the server, keep the session",
+    "/detach — close the client, keep the daemon (reattach with --attach <id>)",
+    "/exit, /quit — quit IRC and terminate daemon and client",
+    "^X cycles the active target; PgUp/PgDn scroll the history",
+];
 
 fn args2(rest: &str) -> Option<(String, String)> {
     let rest = rest.trim();
@@ -129,6 +143,7 @@ pub fn parse(line: &str) -> InputAction {
         "disconnect" => InputAction::Command(ClientCommand::Disconnect),
         "detach" => InputAction::Detach,
         "exit" | "quit" => InputAction::Exit(opt()),
+        "help" => InputAction::Help,
         other => InputAction::Error(format!("unknown command: /{other}")),
     }
 }
