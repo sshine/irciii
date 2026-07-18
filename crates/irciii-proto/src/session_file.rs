@@ -13,12 +13,43 @@ use uuid::Uuid;
 /// Contents of a session discovery file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFile {
-    /// TCP port the daemon listens on (loopback only).
+    /// Host the daemon listens on (default 127.0.0.1).
+    pub host: String,
+    /// TCP port the daemon listens on (default 6678).
     pub port: u16,
+    /// SHA-256 fingerprint (lowercase hex) of the daemon's self-signed TLS
+    /// certificate; clients pin this instead of PKI verification.
+    pub fingerprint: String,
     /// Daemon process id.
     pub pid: u32,
     /// RFC 3339 timestamp of daemon start.
     pub started: String,
+}
+
+/// List all session ids that currently have a session file.
+pub fn list() -> io::Result<Vec<(Uuid, SessionFile)>> {
+    let mut sessions = Vec::new();
+    let dir = match fs::read_dir(session_dir()) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(sessions),
+        Err(err) => return Err(err),
+    };
+    for entry in dir {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(id) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".json"))
+            .and_then(|n| n.parse::<Uuid>().ok())
+        else {
+            continue;
+        };
+        if let Ok(contents) = read(id) {
+            sessions.push((id, contents));
+        }
+    }
+    sessions.sort_by(|a, b| a.1.started.cmp(&b.1.started));
+    Ok(sessions)
 }
 
 /// Directory holding session files: `$XDG_RUNTIME_DIR/irciii`, falling back to
@@ -86,7 +117,9 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let id = Uuid::new_v4();
         let contents = SessionFile {
+            host: "127.0.0.1".into(),
             port: 45678,
+            fingerprint: "ab".repeat(32),
             pid: 1234,
             started: "2026-07-18T12:00:00Z".into(),
         };

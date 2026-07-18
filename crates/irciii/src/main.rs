@@ -4,6 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use irciii_daemon::server::DEFAULT_LISTEN;
 use irciii_proto::session_file;
 use irciii_proto::ui_state::QuitKind;
 use uuid::Uuid;
@@ -15,6 +16,29 @@ struct Args {
     /// Attach to a running session by id (printed on /detach).
     #[arg(long, value_name = "SESSION_ID")]
     attach: Option<Uuid>,
+
+    /// Daemon address to attach to (for remote sessions without a local
+    /// session file); requires --fingerprint.
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        requires = "attach",
+        requires = "fingerprint"
+    )]
+    daemon: Option<String>,
+
+    /// SHA-256 fingerprint of the daemon's TLS certificate (printed on
+    /// /detach; required with --daemon).
+    #[arg(long, value_name = "SHA256_HEX")]
+    fingerprint: Option<String>,
+
+    /// Address the daemon listens on when starting a new session.
+    #[arg(long, value_name = "HOST:PORT", default_value = DEFAULT_LISTEN)]
+    listen: String,
+
+    /// List local sessions and exit.
+    #[arg(long)]
+    list: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -28,34 +52,53 @@ enum Command {
         /// The session id to serve.
         #[arg(long)]
         session: Uuid,
+        /// The address to listen on.
+        #[arg(long, default_value = DEFAULT_LISTEN)]
+        listen: String,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    if args.list {
+        return list_sessions();
+    }
     match args.command {
-        Some(Command::Daemon { session }) => run_daemon(session).await,
+        Some(Command::Daemon { session, listen }) => {
+            irciii_daemon::server::run(session, &listen).await?;
+            Ok(())
+        }
         None => match args.attach {
-            Some(session) => run_client(session).await,
+            Some(session) => run_client(session, args.daemon, args.fingerprint).await,
             None => {
                 let session = Uuid::new_v4();
-                spawn_daemon(session)?;
+                spawn_daemon(session, &args.listen)?;
                 wait_for_session_file(session).await?;
-                run_client(session).await
+                run_client(session, None, None).await
             }
         },
     }
 }
 
-/// The daemon half: logs to a file, serves until /exit.
-async fn run_daemon(session: Uuid) -> Result<(), Box<dyn std::error::Error>> {
-    irciii_daemon::server::run(session).await?;
+/// `irciii --list`: print local sessions.
+fn list_sessions() -> Result<(), Box<dyn std::error::Error>> {
+    let sessions = session_file::list()?;
+    if sessions.is_empty() {
+        println!("no sessions");
+        return Ok(());
+    }
+    for (id, info) in sessions {
+        println!(
+            "{id}  {}:{}  pid {}  started {}",
+            info.host, info.port, info.pid, info.started
+        );
+    }
     Ok(())
 }
 
 /// Spawn the daemon as a detached child of this binary.
-fn spawn_daemon(session: Uuid) -> std::io::Result<()> {
+fn spawn_daemon(session: Uuid, listen: &str) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let log = session_file::session_dir().join(format!("{session}.log"));
     std::fs::create_dir_all(session_file::session_dir())?;
@@ -64,6 +107,8 @@ fn spawn_daemon(session: Uuid) -> std::io::Result<()> {
     cmd.arg("daemon")
         .arg("--session")
         .arg(session.to_string())
+        .arg("--listen")
+        .arg(listen)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
@@ -85,20 +130,47 @@ async fn wait_for_session_file(session: Uuid) -> Result<(), Box<dyn std::error::
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Err(format!("daemon did not start (no session file for {session})").into())
+    Err(format!(
+        "daemon did not start (no session file for {session}; see {})",
+        session_file::session_dir()
+            .join(format!("{session}.log"))
+            .display()
+    )
+    .into())
 }
 
-/// The client half: connect over TCP, run the TUI, report how it ended.
-async fn run_client(session: Uuid) -> Result<(), Box<dyn std::error::Error>> {
-    let info = session_file::read(session)
-        .map_err(|err| format!("cannot find session {session}: {err}"))?;
-    let (tx, rx, pump) = irciii_client::net::connect(info.port).await?;
+/// The client half: connect over TLS, run the TUI, report how it ended.
+async fn run_client(
+    session: Uuid,
+    daemon: Option<String>,
+    fingerprint: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Remote attach: explicit address + pinned fingerprint. Local attach:
+    // both come from the session file.
+    let (host, port, fingerprint) = match (daemon, fingerprint) {
+        (Some(addr), Some(fingerprint)) => {
+            let (host, port) = addr
+                .rsplit_once(':')
+                .ok_or_else(|| format!("bad --daemon address: {addr}"))?;
+            (host.to_string(), port.parse::<u16>()?, fingerprint)
+        }
+        _ => {
+            let info = session_file::read(session)
+                .map_err(|err| format!("cannot find session {session}: {err}"))?;
+            (info.host, info.port, info.fingerprint)
+        }
+    };
+    let (tx, rx, pump) = irciii_client::net::connect(&host, port, &fingerprint).await?;
     let quit = irciii_client::host::run(tx, rx).await?;
     // Let the pump flush queued Detach/Exit frames to the daemon.
     let _ = tokio::time::timeout(Duration::from_secs(2), pump).await;
     match quit {
         QuitKind::Detach => {
-            println!("detached; reattach with: irciii --attach {session}");
+            println!("detached from {host}:{port}");
+            println!("reattach locally:   irciii --attach {session}");
+            println!(
+                "reattach remotely:  irciii --attach {session} --daemon {host}:{port} --fingerprint {fingerprint}"
+            );
         }
         QuitKind::Exit | QuitKind::None => {}
     }

@@ -52,6 +52,12 @@ serde_json = "1"
 # Hot reloading
 libloading = "0.8"
 
+# Client<->daemon TLS (versions shared with the irc crate's rustls stack)
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = "0.13"
+sha2 = "0.10"
+
 # Error handling
 thiserror = "2"
 
