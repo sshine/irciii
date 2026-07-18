@@ -53,6 +53,8 @@ pub struct UiState {
     pub input_history_pos: Option<usize>,
     /// The in-progress line, stashed while browsing the input history.
     pub input_draft: String,
+    /// Text killed by ^U, restored by ^Y.
+    pub kill_ring: String,
     /// Replica of the daemon's session snapshot (status bar contents).
     pub snapshot: SessionSnapshot,
     /// Index into the targets list; 0 is the synthetic "(status)" target, so

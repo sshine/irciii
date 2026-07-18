@@ -40,6 +40,16 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         return;
     }
 
+    // ^Y yanks back what ^U killed (promptui doesn't map Ctrl+Y either).
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('y') {
+        if !state.kill_ring.is_empty() {
+            let restored = format!("{}{}", state.input, state.kill_ring);
+            state.input = restored;
+            // with_field rebuilds from the mismatch, cursor at the end.
+        }
+        return;
+    }
+
     // Editing a recalled history item must not modify the original: the
     // moment its content changes it detaches into the current draft (and a
     // copy lands on top of the stack when submitted).
@@ -72,6 +82,13 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
                 state.input = completed;
                 // with_field sees the mismatch and rebuilds, cursor at end.
             }
+        }
+        // ^U kills the buffer into the kill ring (restored by ^Y).
+        Input::ClearAll => {
+            if !state.input.is_empty() {
+                state.kill_ring = state.input.clone();
+            }
+            text_input::with_field(state, |field| field.input(Input::ClearAll));
         }
         Input::Enter => {
             let action = text_input::with_field(state, |field| field.input(Input::Enter));
@@ -201,7 +218,7 @@ fn submit_line(state: &mut UiState, line: &str) {
         InputAction::Help => emit_local(state, HistoryKind::Help),
         InputAction::Clear => {
             // Remove clearable blocks (whois, help) from the log entirely.
-            state.history.retain(|item| !item.kind.is_clearable());
+            state.history.retain(|item| !item.kind.is_card());
             state.heights.clear();
             state.heights.resize(state.history.len(), None);
             state.anchored_len = state.history.len();

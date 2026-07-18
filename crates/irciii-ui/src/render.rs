@@ -77,6 +77,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             return render_names(channel, names, width);
         }
         HistoryKind::Who { mask, entries } => return render_who(mask, entries),
+        HistoryKind::Motd { server, lines } => return render_motd(server, lines, width),
         _ => {}
     }
     let (gutter_spans, text, text_style) = match &item.kind {
@@ -103,14 +104,16 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         HistoryKind::Notice { from, text, .. } => (
             vec![
                 Span::styled(format!("{ts} "), dim()),
-                Span::styled(format!("-{from}- "), Style::default().fg(Color::LightRed)),
+                Span::styled(format!("-{from}- "), crate::styles::accent()),
             ],
             text.clone(),
             Style::default(),
         ),
-        HistoryKind::Join { nick, channel } => {
-            status_line(&ts, format!("{nick} has joined {channel}"), Color::Green)
-        }
+        HistoryKind::Join { nick, channel } => status_line(
+            &ts,
+            format!("{nick} has joined {channel}"),
+            crate::styles::ACCENT,
+        ),
         HistoryKind::Part {
             nick,
             channel,
@@ -121,7 +124,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
                 Some(reason) => format!("{nick} has left {channel} ({reason})"),
                 None => format!("{nick} has left {channel}"),
             },
-            Color::Yellow,
+            crate::styles::ACCENT,
         ),
         HistoryKind::QuitMsg { nick, reason } => status_line(
             &ts,
@@ -129,33 +132,38 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
                 Some(reason) => format!("{nick} has quit ({reason})"),
                 None => format!("{nick} has quit"),
             },
-            Color::Yellow,
+            crate::styles::ACCENT,
         ),
-        HistoryKind::NickChange { old, new } => {
-            status_line(&ts, format!("{old} is now known as {new}"), Color::Cyan)
-        }
-        HistoryKind::Mode { by, target, modes } => {
-            status_line(&ts, format!("mode/{target} [{modes}] by {by}"), Color::Cyan)
-        }
+        HistoryKind::NickChange { old, new } => status_line(
+            &ts,
+            format!("{old} is now known as {new}"),
+            crate::styles::ACCENT,
+        ),
+        HistoryKind::Mode { by, target, modes } => status_line(
+            &ts,
+            format!("mode/{target} [{modes}] by {by}"),
+            crate::styles::ACCENT,
+        ),
         HistoryKind::Topic { channel, topic, by } => status_line(
             &ts,
             match by {
                 Some(by) => format!("{by} changed the topic of {channel} to: {topic}"),
                 None => format!("topic for {channel}: {topic}"),
             },
-            Color::Cyan,
+            crate::styles::ACCENT,
         ),
         HistoryKind::ServerLine { text } => (
             vec![Span::styled(format!("{ts} "), dim())],
             text.clone(),
             dim(),
         ),
-        HistoryKind::ClientStatus { text } => status_line(&ts, text.clone(), Color::Cyan),
+        HistoryKind::ClientStatus { text } => status_line(&ts, text.clone(), crate::styles::ACCENT),
         HistoryKind::Error { text } => status_line(&ts, text.clone(), Color::Red),
         HistoryKind::Whois(_)
         | HistoryKind::Who { .. }
         | HistoryKind::Help
-        | HistoryKind::NamesReply { .. } => {
+        | HistoryKind::NamesReply { .. }
+        | HistoryKind::Motd { .. } => {
             unreachable!("handled above")
         }
     };
@@ -361,6 +369,28 @@ fn render_help() -> Vec<Line<'static>> {
         Span::styled("^X".to_string(), bold()),
         Span::raw(" cycles targets; PgUp/PgDn scroll; Shift/Alt+Enter for a new line".to_string()),
     ]));
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
+    lines
+}
+
+/// Render the server MOTD as a card (cleared by `/clear`).
+fn render_motd(server: &str, motd: &[String], width: u16) -> Vec<Line<'static>> {
+    let label = crate::styles::accent();
+    let mut lines = vec![Line::from(vec![
+        Span::styled("┌ motd ", label),
+        Span::styled(server.to_string(), bold()),
+        Span::styled(format!(" ({} lines)", motd.len()), dim()),
+    ])];
+    let first = (width as usize).saturating_sub(2).max(8) as u16;
+    let cont = (width as usize).saturating_sub(4).max(8) as u16;
+    for text in motd {
+        for (i, part) in wrap_two(text, first, cont).into_iter().enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled(if i == 0 { "│ " } else { "│   " }.to_string(), label),
+                Span::styled(part, dim()),
+            ]));
+        }
+    }
     lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
 }
@@ -589,7 +619,7 @@ mod tests {
                 "zfnmxt".into(),
             ],
         });
-        assert!(it.kind.is_clearable());
+        assert!(it.kind.is_card());
         let lines = plain(&render_item(&it, 40, &RenderOpts::default()));
         assert!(lines[0].starts_with("┌ names #diku (4)"), "{lines:?}");
         // Column-major with ops before voiced before the rest: the first
@@ -606,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn whois_renders_as_block_and_is_clearable() {
+    fn whois_renders_as_block_and_is_card() {
         let it = item(HistoryKind::Whois(irciii_proto::history::WhoisInfo {
             nick: "zfnmxt".into(),
             userhost: Some("~z@example.org".into()),
@@ -615,7 +645,7 @@ mod tests {
             idle_secs: Some(63),
             ..Default::default()
         }));
-        assert!(it.kind.is_clearable());
+        assert!(it.kind.is_card());
         let lines = plain(&render_item(&it, 80, &RenderOpts::default()));
         assert!(
             lines[0].contains("whois zfnmxt (~z@example.org)"),

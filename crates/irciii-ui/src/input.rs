@@ -24,7 +24,10 @@ pub enum InputAction {
 /// All slash commands with a one-line summary, for tab completion, the
 /// `/help` block, and the command overlay shown while typing a `/command`.
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("clear", "remove whois/help blocks from the log"),
+    (
+        "clear",
+        "remove cards (whois/who/names/motd/help) from the log",
+    ),
     (
         "connect",
         "[-notls] <server> [port] [nick] — connect (TLS by default)",
