@@ -1,0 +1,73 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sshine/irciii"
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+[workspace.dependencies]
+# Internal crates
+irciii-proto = { version = "0.1.0", path = "crates/irciii-proto" }
+irciii-daemon = { version = "0.1.0", path = "crates/irciii-daemon" }
+irciii-ui = { version = "0.1.0", path = "crates/irciii-ui" }
+irciii-client = { version = "0.1.0", path = "crates/irciii-client" }
+
+# UI
+promptui-core = { git = "https://github.com/sshine/promptui.git" }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-width = "0.2"
+
+# IRC
+irc = { version = "1.1", default-features = false, features = ["tls-rust"] }
+
+# Async runtime
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "net",
+  "process",
+  "io-util",
+  "signal",
+] }
+futures = "0.3"
+
+# Wire protocol
+postcard = { version = "1", features = ["use-std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Hot reloading
+libloading = "0.8"
+
+# Error handling
+thiserror = "2"
+
+# Diagnostics
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Misc
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+directories = "6"
+rand = "0.9"
+
+# Dev dependencies
+insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
