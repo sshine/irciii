@@ -41,6 +41,10 @@ pub struct Session {
     pending_who: Option<(String, Vec<WhoEntry>)>,
     /// MOTD lines being assembled (375/372 until 376/422).
     pending_motd: Option<Vec<String>>,
+    /// NAMES burst being assembled: (channel, names), emitted at 366.
+    pending_names: Option<(String, Vec<String>)>,
+    /// True when the next NAMES reply was asked for with `/names`.
+    names_requested: bool,
     /// Parameters of the last (attempted) connection, for auto-reconnect.
     last_params: Option<ConnectParams>,
     /// True when the user asked to disconnect (suppresses auto-reconnect).
@@ -75,6 +79,8 @@ impl Session {
             pending_whois: None,
             pending_who: None,
             pending_motd: None,
+            pending_names: None,
+            names_requested: false,
             last_params: None,
             user_disconnected: false,
             reconnect: None,
@@ -225,7 +231,9 @@ impl Session {
             }
             ClientToDaemon::Exit => {
                 if let Some(conn) = &self.conn {
-                    let _ = conn.client().send_quit("irciii: exiting");
+                    let _ = conn
+                        .client()
+                        .send_quit(concat!("irciii v", env!("CARGO_PKG_VERSION")));
                 }
                 self.send(DaemonToClient::Bye { exiting: true }).await;
                 return Some(SessionEnd::Exit);
@@ -372,6 +380,7 @@ impl Session {
                         let channel = channel
                             .clone()
                             .or_else(|| self.snapshot.targets.first().map(|t| t.name.clone()));
+                        self.names_requested = true;
                         client.send(Command::NAMES(channel, None))
                     }
                     ClientCommand::Topic { channel, topic } => {
@@ -452,11 +461,58 @@ impl Session {
         if self.absorb_whois(&message).await
             || self.absorb_who(&message).await
             || self.absorb_motd(&message).await
+            || self.absorb_names(&message).await
         {
             return;
         }
         if let Some(kind) = translate(&message) {
             self.emit(kind).await;
+        }
+    }
+
+    /// Absorb NAMES numerics (353 burst lines, 366 end) into one aggregated
+    /// NAMES card; returns true when the message was consumed.
+    async fn absorb_names(&mut self, message: &Message) -> bool {
+        let (code, args): (u16, &[String]) = match &message.command {
+            Command::Response(response, args) => (*response as u16, args),
+            _ => return false,
+        };
+        match code {
+            // RPL_NAMREPLY: <me> <symbol> <channel> :<names>
+            353 if args.len() >= 4 => {
+                let channel = &args[2];
+                // A different channel's burst begins: flush the previous one.
+                if let Some((pending, _)) = &self.pending_names
+                    && pending != channel
+                    && let Some((channel, names)) = self.pending_names.take()
+                {
+                    self.emit(HistoryKind::NamesReply {
+                        channel,
+                        names,
+                        requested: false,
+                    })
+                    .await;
+                }
+                let (_, names) = self
+                    .pending_names
+                    .get_or_insert_with(|| (channel.clone(), Vec::new()));
+                names.extend(args[3].split_whitespace().map(str::to_string));
+                true
+            }
+            // RPL_ENDOFNAMES
+            366 => {
+                if let Some((channel, names)) = self.pending_names.take() {
+                    let requested = std::mem::take(&mut self.names_requested);
+                    self.emit(HistoryKind::NamesReply {
+                        channel,
+                        names,
+                        requested,
+                    })
+                    .await;
+                }
+                true
+            }
+            _ => false,
         }
     }
 

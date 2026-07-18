@@ -39,6 +39,14 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         return;
     }
 
+    // An open modal captures input until Esc dismisses it.
+    if state.modal.is_some() {
+        if matches!(Input::from(*key), Input::Esc) {
+            state.modal = None;
+        }
+        return;
+    }
+
     // ^X cycles the active target; promptui's Input does not map Ctrl+X, so
     // match the raw event before converting.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x') {
@@ -115,6 +123,115 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
     {
         state.input_history_pos = None;
     }
+}
+
+/// Whether a names list fits its inline card on the current screen; if not,
+/// a requested `/names` opens a modal instead.
+fn names_fit_inline(state: &UiState, names: &[String]) -> bool {
+    let width = if state.heights_width == 0 {
+        80
+    } else {
+        state.heights_width
+    } as usize;
+    let viewport = if state.viewport_height == 0 {
+        24
+    } else {
+        state.viewport_height
+    } as usize;
+    let col_w = names
+        .iter()
+        .map(|n| unicode_width::UnicodeWidthStr::width(n.as_str()))
+        .max()
+        .unwrap_or(1)
+        + 2;
+    let cols = (width.saturating_sub(2) / col_w).max(1);
+    let rows = names.len().div_ceil(cols);
+    // +2 for the card header and footer.
+    rows + 2 <= viewport
+}
+
+/// Render an open modal: a centered bordered box over the whole UI.
+fn render_modal(state: &UiState, frame: &mut Frame<'_>) {
+    let Some(irciii_proto::ui_state::Modal::Names { channel, names }) = &state.modal else {
+        return;
+    };
+    let theme = promptui_core::theme::Theme::default();
+    let screen = frame.area();
+    let area = ratatui::layout::Rect::new(
+        screen.x + screen.width / 10,
+        screen.y + screen.height / 10,
+        screen.width - screen.width / 5,
+        screen.height - screen.height / 5,
+    );
+    let bg = ratatui::style::Style::default().bg(theme.element_bg);
+    let buf = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(bg);
+            }
+        }
+    }
+    let accent = crate::styles::accent().bg(theme.element_bg);
+    let title = format!("┌ names {channel} ({}) — Esc to close ", names.len());
+    ratatui::text::Line::from(ratatui::text::Span::styled(title, accent)).render(
+        ratatui::layout::Rect::new(area.x, area.y, area.width, 1),
+        buf,
+    );
+
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort_by_key(|n| {
+        let rank = match n.chars().next() {
+            Some('~') => 0,
+            Some('&') => 1,
+            Some('@') => 2,
+            Some('%') => 3,
+            Some('+') => 4,
+            _ => 5,
+        };
+        (rank, n.to_lowercase())
+    });
+    let body_rows = area.height.saturating_sub(2) as usize;
+    let col_w = sorted
+        .iter()
+        .map(|n| unicode_width::UnicodeWidthStr::width(n.as_str()))
+        .max()
+        .unwrap_or(1)
+        + 2;
+    let cols = ((area.width.saturating_sub(4) as usize) / col_w).max(1);
+    let capacity = body_rows * cols;
+    for row in 0..body_rows {
+        let mut cells = String::new();
+        for col in 0..cols {
+            if let Some(name) = sorted.get(col * body_rows + row) {
+                cells.push_str(&format!("{name:<col_w$}"));
+            }
+        }
+        let text = if row + 1 == body_rows && sorted.len() > capacity {
+            format!(
+                "+ {} more",
+                sorted.len() - capacity + cols.min(sorted.len())
+            )
+        } else {
+            cells.trim_end().to_string()
+        };
+        ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled("│ ".to_string(), accent),
+            ratatui::text::Span::styled(
+                text,
+                ratatui::style::Style::default().bg(theme.element_bg),
+            ),
+        ])
+        .render(
+            ratatui::layout::Rect::new(area.x, area.y + 1 + row as u16, area.width, 1),
+            buf,
+        );
+    }
+    ratatui::text::Line::from(ratatui::text::Span::styled("└".to_string(), accent)).render(
+        ratatui::layout::Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        buf,
+    );
 }
 
 /// Whether the field content occupies more than one visual line: it contains
@@ -261,6 +378,20 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
             state.history.push(item.clone());
             state.heights.push(None);
             state.last_seq = *seq;
+            // A user-requested NAMES list too large for an inline card opens
+            // a modal with the full list instead.
+            if let HistoryKind::NamesReply {
+                channel,
+                names,
+                requested: true,
+            } = &item.kind
+                && !names_fit_inline(state, names)
+            {
+                state.modal = Some(irciii_proto::ui_state::Modal::Names {
+                    channel: channel.clone(),
+                    names: names.clone(),
+                });
+            }
             run_hooks(state, &item.clone());
         }
         DaemonToClient::Bye { exiting } => {
@@ -319,6 +450,7 @@ pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
     });
 
     render_command_overlay(state, frame, chunks[0]);
+    render_modal(state, frame);
 }
 
 /// While typing a `/command`, overlay the matching commands (with their
@@ -504,6 +636,47 @@ mod tests {
             state.pending,
             vec![ClientToDaemon::Command(ClientCommand::Who { mask: None })]
         );
+    }
+
+    #[test]
+    fn oversized_requested_names_open_a_modal_dismissed_by_esc() {
+        let mut state = state_with_channel();
+        state.heights_width = 40;
+        state.viewport_height = 10;
+        let names: Vec<String> = (0..200).map(|i| format!("nick{i:03}")).collect();
+        apply_msg(
+            &mut state,
+            &DaemonToClient::Event {
+                seq: 1,
+                item: HistoryItem::now(HistoryKind::NamesReply {
+                    channel: "#big".into(),
+                    names: names.clone(),
+                    requested: true,
+                }),
+            },
+        );
+        assert!(state.modal.is_some(), "200 names on a 10-row screen: modal");
+
+        // Keys other than Esc are captured; Esc closes.
+        handle_event(&mut state, &key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(state.modal.is_some());
+        assert!(state.input.is_empty(), "typing is captured by the modal");
+        handle_event(&mut state, &key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(state.modal.is_none());
+
+        // A join-burst (unrequested) list of the same size stays inline.
+        apply_msg(
+            &mut state,
+            &DaemonToClient::Event {
+                seq: 2,
+                item: HistoryItem::now(HistoryKind::NamesReply {
+                    channel: "#big".into(),
+                    names,
+                    requested: false,
+                }),
+            },
+        );
+        assert!(state.modal.is_none());
     }
 
     #[test]

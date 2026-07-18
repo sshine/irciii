@@ -73,7 +73,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
     match &item.kind {
         HistoryKind::Whois(info) => return render_whois(info, width),
         HistoryKind::Help => return render_help(),
-        HistoryKind::NamesReply { channel, names } => {
+        HistoryKind::NamesReply { channel, names, .. } => {
             return render_names(channel, names, width);
         }
         HistoryKind::Who { mask, entries } => return render_who(mask, entries),
@@ -109,30 +109,39 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             text.clone(),
             Style::default(),
         ),
-        HistoryKind::Join { nick, channel } => status_line(
-            &ts,
-            format!("{nick} has joined {channel}"),
-            crate::styles::ACCENT,
+        HistoryKind::Join {
+            nick,
+            userhost,
+            channel,
+        } => (
+            presence_gutter(&ts, nick, userhost),
+            format!("has joined {channel}"),
+            Style::default(),
         ),
         HistoryKind::Part {
             nick,
+            userhost,
             channel,
             reason,
-        } => status_line(
-            &ts,
+        } => (
+            presence_gutter(&ts, nick, userhost),
             match reason {
-                Some(reason) => format!("{nick} has left {channel} ({reason})"),
-                None => format!("{nick} has left {channel}"),
+                Some(reason) => format!("has left {channel} ({reason})"),
+                None => format!("has left {channel}"),
             },
-            crate::styles::ACCENT,
+            Style::default(),
         ),
-        HistoryKind::QuitMsg { nick, reason } => status_line(
-            &ts,
+        HistoryKind::QuitMsg {
+            nick,
+            userhost,
+            reason,
+        } => (
+            presence_gutter(&ts, nick, userhost),
             match reason {
-                Some(reason) => format!("{nick} has quit ({reason})"),
-                None => format!("{nick} has quit"),
+                Some(reason) => format!("has quit ({reason})"),
+                None => "has quit".to_string(),
             },
-            crate::styles::ACCENT,
+            Style::default(),
         ),
         HistoryKind::NickChange { old, new } => status_line(
             &ts,
@@ -452,10 +461,13 @@ fn render_names(channel: &str, names: &[String], width: u16) -> Vec<Line<'static
     let col_w = sorted.iter().map(|n| n.width()).max().unwrap_or(1) + 2;
     let cols = (body / col_w).max(1);
     let rows = sorted.len().div_ceil(cols);
-    for row in 0..rows {
+    // Condense join-flood sized lists: cap the card and count the rest.
+    // (/names above the screen size opens a modal with the full list.)
+    let shown_rows = rows.min(NAMES_CARD_MAX_ROWS);
+    for row in 0..shown_rows {
         let mut cells = String::new();
         for col in 0..cols {
-            if let Some(name) = sorted.get(col * rows + row) {
+            if let Some(name) = sorted.get(col * shown_rows + row) {
                 cells.push_str(&format!("{name:<col_w$}"));
             }
         }
@@ -464,8 +476,33 @@ fn render_names(channel: &str, names: &[String], width: u16) -> Vec<Line<'static
             Span::raw(cells.trim_end().to_string()),
         ]));
     }
+    let shown = (shown_rows * cols).min(sorted.len());
+    if shown < sorted.len() {
+        lines.push(Line::from(vec![
+            Span::styled("│ ".to_string(), label),
+            Span::styled(format!("+ {} more", sorted.len() - shown), dim()),
+        ]));
+    }
     lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
+}
+
+/// Maximum rows a names card shows inline before condensing to "+ N more".
+pub const NAMES_CARD_MAX_ROWS: usize = 8;
+
+/// Gutter for join/part/quit lines: the full `nick!user@host` with the
+/// nickname highlighted and the userhost dimmed.
+fn presence_gutter(ts: &str, nick: &str, userhost: &Option<String>) -> Vec<Span<'static>> {
+    let mut spans = vec![
+        Span::styled(format!("{ts} "), dim()),
+        Span::styled("-!- ".to_string(), crate::styles::accent()),
+        Span::styled(nick.to_string(), bold()),
+    ];
+    if let Some(uh) = userhost {
+        spans.push(Span::styled(format!("!{uh}"), dim()));
+    }
+    spans.push(Span::raw(" "));
+    spans
 }
 
 /// Gutter and style for irssi's `-!-` status lines.
@@ -612,6 +649,7 @@ mod tests {
     fn names_renders_as_sorted_table_block() {
         let it = item(HistoryKind::NamesReply {
             channel: "#diku".into(),
+            requested: false,
             names: vec![
                 "sshine".into(),
                 "@concieggs".into(),
@@ -633,6 +671,24 @@ mod tests {
         assert!(lines.last().expect("lines").starts_with("└"));
         // No timestamp gutter on block items.
         assert!(lines[0].starts_with("┌"));
+    }
+
+    #[test]
+    fn huge_names_card_condenses_with_more_line() {
+        let names: Vec<String> = (0..100).map(|i| format!("nick{i:02}")).collect();
+        let it = item(HistoryKind::NamesReply {
+            channel: "#big".into(),
+            names,
+            requested: false,
+        });
+        let lines = plain(&render_item(&it, 40, &RenderOpts::default()));
+        // header + capped rows + "+ N more" + footer
+        assert!(lines.len() <= NAMES_CARD_MAX_ROWS + 3, "{}", lines.len());
+        assert!(
+            lines[lines.len() - 2].contains("more"),
+            "{:?}",
+            lines[lines.len() - 2]
+        );
     }
 
     #[test]
@@ -664,11 +720,23 @@ mod tests {
     fn join_renders_as_status() {
         let it = item(HistoryKind::Join {
             nick: "n_ko".into(),
+            userhost: Some("~n@host".into()),
             channel: "#diku".into(),
         });
-        let lines = plain(&render_item(&it, 80, &RenderOpts::default()));
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("-!- n_ko has joined #diku"), "{lines:?}");
+        let lines = render_item(&it, 80, &RenderOpts::default());
+        let text = plain(&lines);
+        assert_eq!(text.len(), 1);
+        assert!(
+            text[0].contains("-!- n_ko!~n@host has joined #diku"),
+            "{text:?}"
+        );
+        // The nickname is highlighted; the userhost is dimmed.
+        let nick_span = &lines[0].spans[2];
+        assert_eq!(nick_span.content, "n_ko");
+        assert!(nick_span.style.add_modifier.contains(Modifier::BOLD));
+        let uh_span = &lines[0].spans[3];
+        assert_eq!(uh_span.content, "!~n@host");
+        assert!(uh_span.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

@@ -46,7 +46,12 @@ ci: fmt-check lint test doc readme-check build
 
 # Run the client with hot-reloading of the irciii-ui dylib
 dev:
+    #!/usr/bin/env bash
+    set -m
+    cargo build -p irciii-ui
     cargo watch -w crates/irciii-ui -x 'build -p irciii-ui' &
+    watcher=$!
+    trap 'kill $watcher 2>/dev/null' EXIT
     cargo run -p irciii --features irciii-client/hot-reload
 
 # Watch for changes and run tests

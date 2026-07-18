@@ -59,6 +59,8 @@ pub enum HistoryKind {
     Join {
         /// Joining nick.
         nick: String,
+        /// The `user@host` part of the sender prefix, if present.
+        userhost: Option<String>,
         /// Channel joined.
         channel: String,
     },
@@ -66,6 +68,8 @@ pub enum HistoryKind {
     Part {
         /// Parting nick.
         nick: String,
+        /// The `user@host` part of the sender prefix, if present.
+        userhost: Option<String>,
         /// Channel parted.
         channel: String,
         /// Optional part reason.
@@ -75,6 +79,8 @@ pub enum HistoryKind {
     QuitMsg {
         /// Quitting nick.
         nick: String,
+        /// The `user@host` part of the sender prefix, if present.
+        userhost: Option<String>,
         /// Optional quit reason.
         reason: Option<String>,
     },
@@ -103,12 +109,15 @@ pub enum HistoryKind {
         /// Who set it, if known.
         by: Option<String>,
     },
-    /// A NAMES reply.
+    /// A NAMES reply (aggregated across the 353 burst, emitted at 366).
     NamesReply {
         /// Channel the names belong to.
         channel: String,
         /// Nicks in the channel.
         names: Vec<String>,
+        /// Whether the user asked (`/names`) as opposed to a join burst;
+        /// oversized requested lists open a modal in the client.
+        requested: bool,
     },
     /// A raw server line (numerics, MOTD, ...).
     ServerLine {

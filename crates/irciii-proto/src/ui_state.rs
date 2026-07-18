@@ -22,6 +22,18 @@ pub enum QuitKind {
     Exit,
 }
 
+/// A modal overlay that captures input until dismissed with Esc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Modal {
+    /// A full NAMES list too large for an inline card.
+    Names {
+        /// Channel the names belong to.
+        channel: String,
+        /// Nicks in the channel.
+        names: Vec<String>,
+    },
+}
+
 /// All state the UI worker operates on. Plain data only (see module docs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiState {
@@ -58,6 +70,8 @@ pub struct UiState {
     /// Show the startup splash until this unix-millisecond timestamp; any key
     /// skips it.
     pub splash_until_ms: i64,
+    /// An open modal overlay; Esc dismisses it.
+    pub modal: Option<Modal>,
     /// Replica of the daemon's session snapshot (status bar contents).
     pub snapshot: SessionSnapshot,
     /// Index into the targets list; 0 is the synthetic "(status)" target, so

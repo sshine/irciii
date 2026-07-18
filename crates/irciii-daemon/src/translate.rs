@@ -13,6 +13,15 @@ fn source(message: &Message) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
+/// The `user@host` part of the sender prefix, if present.
+fn userhost(message: &Message) -> Option<String> {
+    message
+        .prefix
+        .as_ref()
+        .map(|p| p.to_string())
+        .and_then(|p| p.split_once('!').map(|(_, uh)| uh.to_string()))
+}
+
 /// Translate an incoming IRC message into a history item kind.
 ///
 /// Returns `None` for protocol chatter that should not appear in the history
@@ -42,15 +51,18 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
         },
         Command::JOIN(channel, ..) => HistoryKind::Join {
             nick: source(message),
+            userhost: userhost(message),
             channel: channel.clone(),
         },
         Command::PART(channel, reason) => HistoryKind::Part {
             nick: source(message),
+            userhost: userhost(message),
             channel: channel.clone(),
             reason: reason.clone(),
         },
         Command::QUIT(reason) => HistoryKind::QuitMsg {
             nick: source(message),
+            userhost: userhost(message),
             reason: reason.clone(),
         },
         Command::NICK(new) => HistoryKind::NickChange {
@@ -85,10 +97,13 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
             topic: args[2].clone(),
             by: None,
         },
+        // The session aggregates NAMES bursts before translation; this arm
+        // only fires for stray 353s outside a burst.
         Command::Response(Response::RPL_NAMREPLY, args) if args.len() >= 4 => {
             HistoryKind::NamesReply {
                 channel: args[2].clone(),
                 names: args[3].split_whitespace().map(str::to_string).collect(),
+                requested: false,
             }
         }
         Command::Response(Response::RPL_ENDOFNAMES, _) => return None,
@@ -147,11 +162,12 @@ mod tests {
     }
 
     #[test]
-    fn join_part_quit() {
+    fn join_part_quit_carry_the_userhost() {
         assert_eq!(
             translate(&msg(":n_ko!~n@host JOIN #diku")),
             Some(HistoryKind::Join {
                 nick: "n_ko".into(),
+                userhost: Some("~n@host".into()),
                 channel: "#diku".into()
             })
         );
@@ -159,6 +175,7 @@ mod tests {
             translate(&msg(":n_ko!~n@host PART #diku :bye")),
             Some(HistoryKind::Part {
                 nick: "n_ko".into(),
+                userhost: Some("~n@host".into()),
                 channel: "#diku".into(),
                 reason: Some("bye".into())
             })
@@ -167,6 +184,7 @@ mod tests {
             translate(&msg(":n_ko!~n@host QUIT :leaving")),
             Some(HistoryKind::QuitMsg {
                 nick: "n_ko".into(),
+                userhost: Some("~n@host".into()),
                 reason: Some("leaving".into())
             })
         );
@@ -192,6 +210,7 @@ mod tests {
                     "n_ko".into(),
                     "@concieggs".into()
                 ],
+                requested: false,
             })
         );
     }
