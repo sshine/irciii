@@ -74,10 +74,14 @@ fn dim() -> Style {
 /// indent by [`CONT_INDENT`] columns.
 pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Line<'static>> {
     let ts = ts_span(item, opts);
-    // Block items render on their own, without the gutter machinery.
+    // Block items render on their own, without the gutter machinery and
+    // without timestamps, so the border stays aligned at column 0.
     match &item.kind {
-        HistoryKind::Whois(info) => return render_whois(&ts, info, width),
-        HistoryKind::Help => return render_help(&ts),
+        HistoryKind::Whois(info) => return render_whois(info, width),
+        HistoryKind::Help => return render_help(),
+        HistoryKind::NamesReply { channel, names } => {
+            return render_names(channel, names, width);
+        }
         _ => {}
     }
     let (gutter_spans, text, text_style) = match &item.kind {
@@ -146,11 +150,6 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             },
             Color::Cyan,
         ),
-        HistoryKind::NamesReply { channel, names } => status_line(
-            &ts,
-            format!("users in {channel}: {}", names.join(" ")),
-            Color::Cyan,
-        ),
         HistoryKind::ServerLine { text } => (
             vec![Span::styled(format!("{ts} "), dim())],
             text.clone(),
@@ -158,7 +157,18 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         ),
         HistoryKind::ClientStatus { text } => status_line(&ts, text.clone(), Color::Cyan),
         HistoryKind::Error { text } => status_line(&ts, text.clone(), Color::Red),
-        HistoryKind::Whois(_) | HistoryKind::Help => unreachable!("handled above"),
+        HistoryKind::Whois(_) | HistoryKind::Help | HistoryKind::NamesReply { .. } => {
+            unreachable!("handled above")
+        }
+    };
+
+    // Highlight mentions of our own nick in messages from others.
+    let highlight_nick = match &item.kind {
+        HistoryKind::Privmsg { nick, .. } | HistoryKind::Action { nick, .. } => {
+            nick != &opts.own_nick
+        }
+        HistoryKind::Notice { from, .. } => from != &opts.own_nick,
+        _ => false,
     };
 
     let gutter_width: usize = gutter_spans.iter().map(|s| s.content.width()).sum();
@@ -171,21 +181,86 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         .into_iter()
         .enumerate()
     {
+        let body = if highlight_nick {
+            mention_spans(&part, &opts.own_nick, text_style)
+        } else {
+            vec![Span::styled(part, text_style)]
+        };
         if i == 0 {
             let mut spans = gutter_spans.clone();
-            spans.push(Span::styled(part, text_style));
+            spans.extend(body);
             lines.push(Line::from(spans));
         } else {
-            lines.push(Line::from(vec![
-                Span::raw(indent.clone()),
-                Span::styled(part, text_style),
-            ]));
+            let mut spans = vec![Span::raw(indent.clone())];
+            spans.extend(body);
+            lines.push(Line::from(spans));
         }
     }
     if lines.is_empty() {
         lines.push(Line::from(gutter_spans));
     }
     lines
+}
+
+/// Style for a mention of our own nick in message text.
+fn mention_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Whether the char is part of a nick (so matches respect word boundaries).
+fn is_nick_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(
+            c,
+            '_' | '-' | '[' | ']' | '\\' | '`' | '^' | '{' | '}' | '|'
+        )
+}
+
+/// Split `text` into spans, highlighting whole-word, case-insensitive
+/// occurrences of `nick`.
+fn mention_spans(text: &str, nick: &str, base: Style) -> Vec<Span<'static>> {
+    if nick.is_empty() {
+        return vec![Span::styled(text.to_string(), base)];
+    }
+    let lower_text = text.to_lowercase();
+    let lower_nick = nick.to_lowercase();
+    // Only safe to slice by lowercase indices when the mapping is 1:1; nicks
+    // and IRC text are near-always ASCII — bail out to unstyled otherwise.
+    if lower_text.len() != text.len() {
+        return vec![Span::styled(text.to_string(), base)];
+    }
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    while let Some(found) = lower_text[pos..].find(&lower_nick) {
+        let start = pos + found;
+        let end = start + nick.len();
+        let boundary_before =
+            start == 0 || !text[..start].chars().next_back().is_some_and(is_nick_char);
+        let boundary_after =
+            end >= text.len() || !text[end..].chars().next().is_some_and(is_nick_char);
+        if boundary_before && boundary_after {
+            if start > pos {
+                spans.push(Span::styled(text[pos..start].to_string(), base));
+            }
+            spans.push(Span::styled(text[start..end].to_string(), mention_style()));
+            pos = end;
+        } else {
+            // Not a whole word: keep scanning past this occurrence (advance a
+            // full char so we never split a multi-byte character).
+            let step = text[start..].chars().next().map_or(1, char::len_utf8);
+            spans.push(Span::styled(text[pos..start + step].to_string(), base));
+            pos = start + step;
+        }
+    }
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_string(), base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), base));
+    }
+    spans
 }
 
 /// Wrap `text` with different widths for the first line (next to the gutter)
@@ -207,15 +282,11 @@ fn wrap_two(text: &str, first_width: u16, cont_width: u16) -> Vec<String> {
     out
 }
 
-/// Render a WHOIS reply block: a header plus indented detail lines.
-fn render_whois(
-    ts: &str,
-    info: &irciii_proto::history::WhoisInfo,
-    width: u16,
-) -> Vec<Line<'static>> {
+/// Render a WHOIS reply block: a header plus indented detail lines. Block
+/// items print no timestamp so the border stays aligned at column 0.
+fn render_whois(info: &irciii_proto::history::WhoisInfo, width: u16) -> Vec<Line<'static>> {
     let label = Style::default().fg(Color::Cyan);
     let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{ts} "), dim()),
         Span::styled("┌ whois ", label),
         Span::styled(info.nick.clone(), bold()),
         Span::styled(
@@ -227,11 +298,12 @@ fn render_whois(
         ),
     ])];
     let mut detail = |name: &str, value: String| {
+        // "│ " on the first line, "│   " on wrapped continuations.
+        let first = (width as usize).saturating_sub(2).max(8) as u16;
+        let cont = (width as usize).saturating_sub(4).max(8) as u16;
         let text = format!("{name}: {value}");
-        let cont = (width as usize).saturating_sub(CONT_INDENT + 2).max(8) as u16;
-        for (i, part) in wrap_two(&text, cont, cont).into_iter().enumerate() {
+        for (i, part) in wrap_two(&text, first, cont).into_iter().enumerate() {
             lines.push(Line::from(vec![
-                Span::raw(" ".repeat(CONT_INDENT)),
                 Span::styled(if i == 0 { "│ " } else { "│   " }.to_string(), label),
                 Span::raw(part),
             ]));
@@ -273,38 +345,72 @@ fn render_whois(
     for line in &info.lines {
         detail("info", line.clone());
     }
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(CONT_INDENT)),
-        Span::styled("└".to_string(), label),
-    ]));
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
 }
 
 /// Render the `/help` overview block (cleared by `/clear`).
-fn render_help(ts: &str) -> Vec<Line<'static>> {
+fn render_help() -> Vec<Line<'static>> {
     let label = Style::default().fg(Color::Cyan);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{ts} "), dim()),
-        Span::styled("┌ help", label),
-    ])];
+    let mut lines = vec![Line::from(Span::styled("┌ help", label))];
     for (name, summary) in crate::input::COMMANDS {
         lines.push(Line::from(vec![
-            Span::raw(" ".repeat(CONT_INDENT)),
             Span::styled("│ ".to_string(), label),
             Span::styled(format!("/{name:<12}"), bold()),
             Span::raw((*summary).to_string()),
         ]));
     }
     lines.push(Line::from(vec![
-        Span::raw(" ".repeat(CONT_INDENT)),
         Span::styled("│ ".to_string(), label),
         Span::styled("^X".to_string(), bold()),
         Span::raw(" cycles targets; PgUp/PgDn scroll; Shift/Alt+Enter for a new line".to_string()),
     ]));
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(CONT_INDENT)),
-        Span::styled("└".to_string(), label),
-    ]));
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
+    lines
+}
+
+/// Render a NAMES reply as a column-major table block (cleared by `/clear`).
+fn render_names(channel: &str, names: &[String], width: u16) -> Vec<Line<'static>> {
+    let label = Style::default().fg(Color::Cyan);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("┌ names ", label),
+        Span::styled(channel.to_string(), bold()),
+        Span::styled(format!(" ({})", names.len()), dim()),
+    ])];
+
+    // Sort by membership rank (@ ops, % halfops, + voiced, rest), then name.
+    let rank = |name: &str| match name.chars().next() {
+        Some('~') => 0,
+        Some('&') => 1,
+        Some('@') => 2,
+        Some('%') => 3,
+        Some('+') => 4,
+        _ => 5,
+    };
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+    });
+
+    let body = (width as usize).saturating_sub(2).max(8);
+    let col_w = sorted.iter().map(|n| n.width()).max().unwrap_or(1) + 2;
+    let cols = (body / col_w).max(1);
+    let rows = sorted.len().div_ceil(cols);
+    for row in 0..rows {
+        let mut cells = String::new();
+        for col in 0..cols {
+            if let Some(name) = sorted.get(col * rows + row) {
+                cells.push_str(&format!("{name:<col_w$}"));
+            }
+        }
+        lines.push(Line::from(vec![
+            Span::styled("│ ".to_string(), label),
+            Span::raw(cells.trim_end().to_string()),
+        ]));
+    }
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
 }
 
@@ -406,6 +512,73 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn mentions_of_own_nick_are_highlighted() {
+        let opts = RenderOpts {
+            own_nick: "sshine".into(),
+            ..RenderOpts::default()
+        };
+        let it = item(HistoryKind::Privmsg {
+            nick: "n_ko".into(),
+            target: "#diku".into(),
+            text: "sshine, are you also into quantum computing? Sshine?".into(),
+        });
+        let lines = render_item(&it, 120, &opts);
+        let highlighted: Vec<&str> = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style == mention_style())
+            .map(|s| s.content.as_ref())
+            .collect();
+        // Case-insensitive, word-boundary matches only.
+        assert_eq!(highlighted, vec!["sshine", "Sshine"]);
+
+        // Substrings are not mentions.
+        let it = item(HistoryKind::Privmsg {
+            nick: "n_ko".into(),
+            target: "#diku".into(),
+            text: "sshines stuff is not a mention".into(),
+        });
+        let lines = render_item(&it, 120, &opts);
+        assert!(lines[0].spans.iter().all(|s| s.style != mention_style()));
+
+        // Our own messages are not highlighted.
+        let it = item(HistoryKind::Privmsg {
+            nick: "sshine".into(),
+            target: "#diku".into(),
+            text: "talking about sshine myself".into(),
+        });
+        let lines = render_item(&it, 120, &opts);
+        assert!(lines[0].spans.iter().all(|s| s.style != mention_style()));
+    }
+
+    #[test]
+    fn names_renders_as_sorted_table_block() {
+        let it = item(HistoryKind::NamesReply {
+            channel: "#diku".into(),
+            names: vec![
+                "sshine".into(),
+                "@concieggs".into(),
+                "+n_ko".into(),
+                "zfnmxt".into(),
+            ],
+        });
+        assert!(it.kind.is_clearable());
+        let lines = plain(&render_item(&it, 40, &RenderOpts::default()));
+        assert!(lines[0].starts_with("┌ names #diku (4)"), "{lines:?}");
+        // Column-major with ops before voiced before the rest: the first
+        // column reads @concieggs then +n_ko.
+        assert!(lines[1].starts_with("│ @concieggs"), "{lines:?}");
+        assert!(lines[2].starts_with("│ +n_ko"), "{lines:?}");
+        let body = lines[1..lines.len() - 1].join("\n");
+        for name in ["sshine", "zfnmxt"] {
+            assert!(body.contains(name), "{name} missing: {body}");
+        }
+        assert!(lines.last().expect("lines").starts_with("└"));
+        // No timestamp gutter on block items.
+        assert!(lines[0].starts_with("┌"));
     }
 
     #[test]

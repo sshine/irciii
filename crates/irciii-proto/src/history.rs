@@ -132,9 +132,13 @@ pub enum HistoryKind {
 }
 
 impl HistoryKind {
-    /// Whether `/clear` removes this item from the log.
+    /// Whether `/clear` removes this item from the log. Clearable items are
+    /// the block-rendered ones (no timestamp gutter): whois, help, names.
     pub fn is_clearable(&self) -> bool {
-        matches!(self, HistoryKind::Whois(_) | HistoryKind::Help)
+        matches!(
+            self,
+            HistoryKind::Whois(_) | HistoryKind::Help | HistoryKind::NamesReply { .. }
+        )
     }
 }
 

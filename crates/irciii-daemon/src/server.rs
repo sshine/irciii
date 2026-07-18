@@ -55,9 +55,12 @@ pub fn fingerprint_hex(cert_der: &[u8]) -> String {
 /// write the session file, serve clients until the session exits. The session
 /// file is removed on the way out.
 pub async fn run(session_id: Uuid, listen: &str) -> Result<(), ServerError> {
-    let (host, _port) = listen
+    let (host, base_port) = listen
         .rsplit_once(':')
         .ok_or_else(|| ServerError::BadAddr(listen.to_string()))?;
+    let base_port: u16 = base_port
+        .parse()
+        .map_err(|_| ServerError::BadAddr(listen.to_string()))?;
 
     // Per-session self-signed certificate; clients pin its fingerprint.
     let cert = rcgen::generate_simple_self_signed(vec![host.to_string(), "irciii".to_string()])?;
@@ -70,7 +73,28 @@ pub async fn run(session_id: Uuid, listen: &str) -> Result<(), ServerError> {
         .with_single_cert(vec![cert_der.into()], key)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let listener = TcpListener::bind(listen).await?;
+    // The requested port may be taken by another session: try successive
+    // ports (6678, 6679, ...) before giving up.
+    let mut listener = None;
+    for port in base_port..base_port.saturating_add(50) {
+        match TcpListener::bind((host, port)).await {
+            Ok(bound) => {
+                listener = Some(bound);
+                break;
+            }
+            Err(err) if err.kind() == io::ErrorKind::AddrInUse => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    let listener = listener.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "no free port in {base_port}..{}",
+                base_port.saturating_add(50)
+            ),
+        )
+    })?;
     let addr = listener.local_addr()?;
     session_file::write(
         session_id,
