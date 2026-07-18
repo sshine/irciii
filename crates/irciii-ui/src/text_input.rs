@@ -33,6 +33,19 @@ fn build(content: &str) -> TextField {
     field
 }
 
+/// The input border reflects what the field holds: cyan while typing a
+/// command, a darker tint while browsing the input history, the promptui
+/// primary otherwise.
+fn border_color(state: &UiState) -> ratatui::style::Color {
+    if state.input.starts_with('/') {
+        crate::styles::ACCENT
+    } else if state.input_history_pos.is_some() {
+        crate::styles::darken(Theme::default().primary)
+    } else {
+        Theme::default().primary
+    }
+}
+
 /// Run `f` against the input field, keeping `state.input` as the mirror of
 /// the field's content.
 pub fn with_field<R>(state: &mut UiState, f: impl FnOnce(&mut TextField) -> R) -> R {
@@ -46,6 +59,7 @@ pub fn with_field<R>(state: &mut UiState, f: impl FnOnce(&mut TextField) -> R) -
             *slot = Some(build(&state.input));
         }
         let field = slot.as_mut().expect("field built above");
+        field.set_border_color(border_color(state));
         let result = f(field);
         state.input = field.content();
         result

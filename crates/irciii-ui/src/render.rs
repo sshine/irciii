@@ -8,6 +8,8 @@ use chrono::{DateTime, Local};
 use irciii_proto::history::{HistoryItem, HistoryKind};
 use promptui_core::widgets::word_wrap::wrap_line_strs;
 use ratatui::style::{Color, Modifier, Style};
+
+use crate::styles::{bold, dim};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -52,10 +54,6 @@ fn nick_style(nick: &str, opts: &RenderOpts) -> Style {
     }
 }
 
-fn bold() -> Style {
-    Style::default().add_modifier(Modifier::BOLD)
-}
-
 fn ts_span(item: &HistoryItem, opts: &RenderOpts) -> String {
     DateTime::from_timestamp_millis(item.ts_ms)
         .map(|utc| {
@@ -64,10 +62,6 @@ fn ts_span(item: &HistoryItem, opts: &RenderOpts) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "??:??:??".to_string())
-}
-
-fn dim() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
 }
 
 /// Render one history item into wrapped lines. Continuation lines always
@@ -208,9 +202,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
 
 /// Style for a mention of our own nick in message text.
 fn mention_style() -> Style {
-    Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD)
+    crate::styles::mention()
 }
 
 /// Whether the char is part of a nick (so matches respect word boundaries).
@@ -289,7 +281,7 @@ fn wrap_two(text: &str, first_width: u16, cont_width: u16) -> Vec<String> {
 /// Render a WHOIS reply block: a header plus indented detail lines. Block
 /// items print no timestamp so the border stays aligned at column 0.
 fn render_whois(info: &irciii_proto::history::WhoisInfo, width: u16) -> Vec<Line<'static>> {
-    let label = Style::default().fg(Color::Cyan);
+    let label = crate::styles::accent();
     let mut lines = vec![Line::from(vec![
         Span::styled("┌ whois ", label),
         Span::styled(info.nick.clone(), bold()),
@@ -355,7 +347,7 @@ fn render_whois(info: &irciii_proto::history::WhoisInfo, width: u16) -> Vec<Line
 
 /// Render the `/help` overview block (cleared by `/clear`).
 fn render_help() -> Vec<Line<'static>> {
-    let label = Style::default().fg(Color::Cyan);
+    let label = crate::styles::accent();
     let mut lines = vec![Line::from(Span::styled("┌ help", label))];
     for (name, summary) in crate::input::COMMANDS {
         lines.push(Line::from(vec![
@@ -375,7 +367,7 @@ fn render_help() -> Vec<Line<'static>> {
 
 /// Render a WHO reply as an aligned table block (cleared by `/clear`).
 fn render_who(mask: &str, entries: &[irciii_proto::history::WhoEntry]) -> Vec<Line<'static>> {
-    let label = Style::default().fg(Color::Cyan);
+    let label = crate::styles::accent();
     let mut lines = vec![Line::from(vec![
         Span::styled("┌ who ", label),
         Span::styled(mask.to_string(), bold()),
@@ -403,7 +395,7 @@ fn render_who(mask: &str, entries: &[irciii_proto::history::WhoEntry]) -> Vec<Li
 
 /// Render a NAMES reply as a column-major table block (cleared by `/clear`).
 fn render_names(channel: &str, names: &[String], width: u16) -> Vec<Line<'static>> {
-    let label = Style::default().fg(Color::Cyan);
+    let label = crate::styles::accent();
     let mut lines = vec![Line::from(vec![
         Span::styled("┌ names ", label),
         Span::styled(channel.to_string(), bold()),

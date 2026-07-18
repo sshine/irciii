@@ -40,15 +40,22 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         return;
     }
 
+    // Editing a recalled history item must not modify the original: the
+    // moment its content changes it detaches into the current draft (and a
+    // copy lands on top of the stack when submitted).
+    let browse_pos = state.input_history_pos;
+    let before = browse_pos.is_some().then(|| state.input.clone());
+
     match Input::from(*key) {
         Input::PageUp => state.scroll_offset += page(state),
         Input::PageDown => {
             state.scroll_offset = state.scroll_offset.saturating_sub(page(state));
         }
-        // Up/Down recall input history on a single-line draft; once the field
-        // is multi-line they navigate between its lines instead.
-        Input::Up if !state.input.contains('\n') => history_recall(state, Direction::Back),
-        Input::Down if !state.input.contains('\n') => history_recall(state, Direction::Forward),
+        // Up/Down recall input history while the field is a single visual
+        // line; once the content has a line break or wraps, they navigate
+        // between the field's lines instead (promptui behavior).
+        Input::Up if !field_is_multiline(state) => history_recall(state, Direction::Back),
+        Input::Down if !field_is_multiline(state) => history_recall(state, Direction::Forward),
         Input::Tab => {
             // /command completion first; otherwise complete the last word
             // against the active channel's members.
@@ -76,6 +83,32 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
             text_input::with_field(state, |field| field.input(input));
         }
     }
+
+    // Content changed while browsing (and not by the recall itself, which
+    // moves the position): detach from the history item into a fresh draft.
+    if let (Some(pos), Some(before)) = (browse_pos, before)
+        && state.input_history_pos == Some(pos)
+        && state.input != before
+    {
+        state.input_history_pos = None;
+    }
+}
+
+/// Whether the field content occupies more than one visual line: it contains
+/// a line break, or it is long enough to wrap at the current width.
+fn field_is_multiline(state: &UiState) -> bool {
+    if state.input.contains('\n') {
+        return true;
+    }
+    // Approximate the field's wrap width: viewport width minus border,
+    // padding, scrollbar, and cursor reserve.
+    let width = if state.heights_width == 0 {
+        80
+    } else {
+        state.heights_width
+    };
+    let wrap = width.saturating_sub(8).max(8) as usize;
+    unicode_width::UnicodeWidthStr::width(state.input.as_str()) > wrap
 }
 
 enum Direction {
@@ -296,8 +329,9 @@ fn render_command_overlay(
         let line = ratatui::text::Line::from(vec![
             ratatui::text::Span::styled(
                 format!(" /{name:<12}"),
+                // Commands render in the shared accent cyan everywhere.
                 ratatui::style::Style::default()
-                    .fg(theme.primary)
+                    .fg(crate::styles::ACCENT)
                     .bg(theme.element_bg)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
@@ -527,6 +561,50 @@ mod tests {
         assert!(state.input.is_empty());
         // The whole multi-line entry is one history item.
         assert_eq!(state.input_history, vec!["one\ntwo"]);
+    }
+
+    #[test]
+    fn up_down_navigate_wrapped_or_multiline_content() {
+        let mut state = state_with_channel();
+        state.heights_width = 40;
+        // A line longer than the wrap width: Up must NOT recall history.
+        state.input_history.push("older entry".into());
+        state.input = "a".repeat(60);
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(
+            state.input,
+            "a".repeat(60),
+            "wrapped line: Up navigates, not recalls"
+        );
+        assert_eq!(state.input_history_pos, None);
+
+        // A short line: Up recalls.
+        state.input = "hi".into();
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "older entry");
+        assert_eq!(state.input_history_pos, Some(0));
+    }
+
+    #[test]
+    fn editing_recalled_item_detaches_into_draft() {
+        let mut state = state_with_channel();
+        for c in "original".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        handle_event(&mut state, &key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "original");
+        assert_eq!(state.input_history_pos, Some(0));
+
+        // Editing detaches: the position resets, the original stays intact.
+        handle_event(&mut state, &key(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(state.input, "original!");
+        assert_eq!(state.input_history_pos, None);
+        assert_eq!(state.input_history, vec!["original"]);
+
+        // Submitting the edit puts the copy on top of the stack.
+        handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(state.input_history, vec!["original", "original!"]);
     }
 
     #[test]

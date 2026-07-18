@@ -9,4 +9,5 @@ pub mod hooks;
 pub mod input;
 pub mod render;
 pub mod status_bar;
+pub mod styles;
 pub mod text_input;
