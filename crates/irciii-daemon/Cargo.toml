@@ -1,0 +1,29 @@
+[package]
+name = "irciii-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "IRC connection daemon for irciii"
+readme = "../../README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+irciii-proto.workspace = true
+irc.workspace = true
+tokio.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+directories.workspace = true
+
+[dev-dependencies]
+rand.workspace = true

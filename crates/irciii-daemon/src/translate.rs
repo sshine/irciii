@@ -1,0 +1,198 @@
+//! Translation of incoming [`irc::proto::Message`]s into structured
+//! [`HistoryKind`] items.
+
+use irc::proto::{Command, Message, Response};
+use irciii_proto::history::HistoryKind;
+
+/// Nickname of a message's sender, falling back to the server prefix or "?".
+fn source(message: &Message) -> String {
+    message
+        .source_nickname()
+        .map(str::to_string)
+        .or_else(|| message.prefix.as_ref().map(|p| p.to_string()))
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// Translate an incoming IRC message into a history item kind.
+///
+/// Returns `None` for protocol chatter that should not appear in the history
+/// (PING/PONG, capability negotiation).
+pub fn translate(message: &Message) -> Option<HistoryKind> {
+    let kind = match &message.command {
+        Command::PING(..) | Command::PONG(..) | Command::CAP(..) => return None,
+        Command::PRIVMSG(target, text) => match text
+            .strip_prefix("\u{1}ACTION ")
+            .and_then(|rest| rest.strip_suffix('\u{1}'))
+        {
+            Some(action) => HistoryKind::Action {
+                nick: source(message),
+                target: target.clone(),
+                text: action.to_string(),
+            },
+            None => HistoryKind::Privmsg {
+                nick: source(message),
+                target: target.clone(),
+                text: text.clone(),
+            },
+        },
+        Command::NOTICE(target, text) => HistoryKind::Notice {
+            from: source(message),
+            target: target.clone(),
+            text: text.clone(),
+        },
+        Command::JOIN(channel, ..) => HistoryKind::Join {
+            nick: source(message),
+            channel: channel.clone(),
+        },
+        Command::PART(channel, reason) => HistoryKind::Part {
+            nick: source(message),
+            channel: channel.clone(),
+            reason: reason.clone(),
+        },
+        Command::QUIT(reason) => HistoryKind::QuitMsg {
+            nick: source(message),
+            reason: reason.clone(),
+        },
+        Command::NICK(new) => HistoryKind::NickChange {
+            old: source(message),
+            new: new.clone(),
+        },
+        Command::ChannelMODE(target, modes) => HistoryKind::Mode {
+            by: source(message),
+            target: target.clone(),
+            modes: modes
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
+        Command::UserMODE(target, modes) => HistoryKind::Mode {
+            by: source(message),
+            target: target.clone(),
+            modes: modes
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
+        Command::TOPIC(channel, topic) => HistoryKind::Topic {
+            channel: channel.clone(),
+            topic: topic.clone().unwrap_or_default(),
+            by: Some(source(message)),
+        },
+        Command::Response(Response::RPL_TOPIC, args) if args.len() >= 3 => HistoryKind::Topic {
+            channel: args[1].clone(),
+            topic: args[2].clone(),
+            by: None,
+        },
+        Command::Response(Response::RPL_NAMREPLY, args) if args.len() >= 4 => {
+            HistoryKind::NamesReply {
+                channel: args[2].clone(),
+                names: args[3].split_whitespace().map(str::to_string).collect(),
+            }
+        }
+        Command::Response(Response::RPL_ENDOFNAMES, _) => return None,
+        Command::Response(_, args) => HistoryKind::ServerLine {
+            // Drop our own nick (args[0]) from numeric replies; join the rest.
+            text: args.iter().skip(1).cloned().collect::<Vec<_>>().join(" "),
+        },
+        Command::ERROR(text) => HistoryKind::Error { text: text.clone() },
+        other => HistoryKind::ServerLine {
+            text: Message::from(other.clone())
+                .to_string()
+                .trim_end()
+                .to_string(),
+        },
+    };
+    Some(kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn msg(line: &str) -> Message {
+        Message::from_str(line).expect("parse irc line")
+    }
+
+    #[test]
+    fn privmsg() {
+        let kind = translate(&msg(
+            ":zfnmxt!~z@host PRIVMSG #diku :I have dual citizenship.",
+        ));
+        assert_eq!(
+            kind,
+            Some(HistoryKind::Privmsg {
+                nick: "zfnmxt".into(),
+                target: "#diku".into(),
+                text: "I have dual citizenship.".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn action() {
+        let kind = translate(&msg(
+            ":sshine!~s@host PRIVMSG #diku :\u{1}ACTION imagines a conversation\u{1}",
+        ));
+        assert_eq!(
+            kind,
+            Some(HistoryKind::Action {
+                nick: "sshine".into(),
+                target: "#diku".into(),
+                text: "imagines a conversation".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn join_part_quit() {
+        assert_eq!(
+            translate(&msg(":n_ko!~n@host JOIN #diku")),
+            Some(HistoryKind::Join {
+                nick: "n_ko".into(),
+                channel: "#diku".into()
+            })
+        );
+        assert_eq!(
+            translate(&msg(":n_ko!~n@host PART #diku :bye")),
+            Some(HistoryKind::Part {
+                nick: "n_ko".into(),
+                channel: "#diku".into(),
+                reason: Some("bye".into())
+            })
+        );
+        assert_eq!(
+            translate(&msg(":n_ko!~n@host QUIT :leaving")),
+            Some(HistoryKind::QuitMsg {
+                nick: "n_ko".into(),
+                reason: Some("leaving".into())
+            })
+        );
+    }
+
+    #[test]
+    fn ping_is_dropped() {
+        assert_eq!(translate(&msg("PING :irc.libera.chat")), None);
+    }
+
+    #[test]
+    fn names_reply() {
+        let kind = translate(&msg(
+            ":server 353 me = #diku :sshine zfnmxt n_ko @concieggs",
+        ));
+        assert_eq!(
+            kind,
+            Some(HistoryKind::NamesReply {
+                channel: "#diku".into(),
+                names: vec![
+                    "sshine".into(),
+                    "zfnmxt".into(),
+                    "n_ko".into(),
+                    "@concieggs".into()
+                ],
+            })
+        );
+    }
+}
