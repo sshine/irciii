@@ -105,7 +105,7 @@ pub fn complete_command(input: &str) -> Option<String> {
 }
 
 /// Complete the last word of `input` against channel members. At the start
-/// of a line a unique match gets `": "` appended, elsewhere a space.
+/// of a line a unique match gets `", "` appended, elsewhere a space.
 pub fn complete_nick(input: &str, members: &[String]) -> Option<String> {
     let last_line = input.rsplit('\n').next().unwrap_or(input);
     let word_start = last_line
@@ -125,7 +125,7 @@ pub fn complete_nick(input: &str, members: &[String]) -> Option<String> {
     match matches.as_slice() {
         [] => None,
         [only] => {
-            let suffix = if word_start == 0 { ": " } else { " " };
+            let suffix = if word_start == 0 { ", " } else { " " };
             Some(format!("{head}{only}{suffix}"))
         }
         [first, rest @ ..] => {

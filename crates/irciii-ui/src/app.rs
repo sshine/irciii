@@ -457,18 +457,18 @@ mod tests {
             "n_ko".into(),
             "concieggs".into(),
         ];
-        // At line start: unique match gets ": ".
+        // At line start: unique match gets ", ".
         for c in "zfn".chars() {
             handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
         }
         handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(state.input, "zfnmxt: ");
+        assert_eq!(state.input, "zfnmxt, ");
         // Mid-line: unique match gets a space.
         for c in "hi n_".chars() {
             handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
         }
         handle_event(&mut state, &key(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(state.input, "zfnmxt: hi n_ko ");
+        assert_eq!(state.input, "zfnmxt, hi n_ko ");
     }
 
     #[test]
