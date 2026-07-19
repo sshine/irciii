@@ -10,13 +10,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    crate2nix = {
-      url = "github:nix-community/crate2nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.devshell.follows = "devshell";
-      inputs.flake-parts.follows = "flake-parts";
-    };
-
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -30,6 +23,8 @@
     hk-nix = {
       url = "github:nix-tools/hk-nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+      inputs.import-tree.follows = "import-tree";
     };
 
     cargo-readme-src = {

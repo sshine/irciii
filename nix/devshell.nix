@@ -18,7 +18,6 @@
           pkgs.stdenv.cc
           pkgs.just
           config.packages.cargo-readme
-          config.packages.cargo-readme-workspace
         ];
 
         env = [

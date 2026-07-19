@@ -10,14 +10,25 @@
       lib,
       ...
     }:
+    let
+      # Flags to reproduce the committed README.md from the irciii crate docs.
+      # The webern/cargo-readme fork understands workspace inheritance, so no
+      # Cargo.toml materialization workaround is needed.
+      readmeArgs = "--project-root crates/irciii --no-title --no-license --no-badges";
+
+      # Reference treefmt by absolute store path: the `nix flake check` hk-check
+      # sandbox runs the pre-commit hook without the devshell PATH, so a bare
+      # `treefmt` is not found there (the deadnix/conventional steps do the same).
+      treefmt = lib.getExe config.treefmt.build.wrapper;
+    in
     {
       hk-nix.settings.hooks = {
         "pre-commit" = {
           fix = true;
           stash = "git";
           steps.treefmt = {
-            check = "treefmt --fail-on-change --no-cache {{files}}";
-            fix = "treefmt {{files}}";
+            check = "${treefmt} --fail-on-change --no-cache {{files}}";
+            fix = "${treefmt} {{files}}";
           };
         };
 
@@ -30,7 +41,8 @@
             check = "cargo clippy --all-targets --all-features -- -D warnings";
           };
           readme = {
-            check = "cargo-readme-workspace --check";
+            check = "cargo readme ${readmeArgs} | diff - README.md";
+            fix = "cargo readme ${readmeArgs} -o README.md";
           };
           lock-check = {
             check = "cargo metadata --locked --format-version 1 > /dev/null";
