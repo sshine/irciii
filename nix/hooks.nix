@@ -42,7 +42,7 @@
           };
           readme = {
             check = "cargo readme ${readmeArgs} | diff - README.md";
-            fix = "cargo readme ${readmeArgs} -o README.md";
+            fix = "cargo readme ${readmeArgs} > README.md";
           };
           lock-check = {
             check = "cargo metadata --locked --format-version 1 > /dev/null";
