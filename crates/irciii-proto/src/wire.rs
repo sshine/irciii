@@ -124,6 +124,13 @@ pub enum ClientCommand {
     },
     /// Disconnect from the current server, keeping the session alive.
     Disconnect,
+    /// Add an ignore rule; the daemon assigns its id.
+    Ignore(crate::ignore::IgnoreSpec),
+    /// Drop ignore rules, by id or by the mask they were created with.
+    Unignore {
+        /// What the user named: a rule id, or a mask.
+        target: String,
+    },
 }
 
 /// Messages sent from the daemon to the client.

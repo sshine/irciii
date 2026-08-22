@@ -7,6 +7,7 @@
 
 use irc::proto::{Command, Message, Response};
 use irciii_proto::history::{HistoryItem, HistoryKind, WhoEntry, WhoisInfo};
+use irciii_proto::ignore::IgnoreRule;
 use irciii_proto::wire::{
     ClientCommand, ClientToDaemon, DaemonToClient, SessionSnapshot, TargetInfo, TargetKind,
 };
@@ -54,6 +55,9 @@ pub struct Session {
     /// Channels to join once registration completes: the autojoin list of a
     /// `/connect`, or the channels we were in before a reconnect.
     rejoin: Vec<String>,
+    /// Next id to hand to an ignore rule. Never reused, so `/unignore <id>`
+    /// cannot hit a rule the user did not mean.
+    next_ignore_id: u32,
 }
 
 /// Reconnect backoff: immediately, then quick retries for netsplits and
@@ -86,6 +90,7 @@ impl Session {
             user_disconnected: false,
             reconnect: None,
             rejoin: Vec::new(),
+            next_ignore_id: 1,
         }
     }
 
@@ -153,6 +158,8 @@ impl Session {
     /// Run the session loop until the client asks to exit or disappears.
     pub async fn run(&mut self, mut rx: mpsc::Receiver<ClientToDaemon>) -> SessionEnd {
         loop {
+            // Hoisted: the select's other arms borrow self mutably.
+            let ignore_expiry = self.next_ignore_expiry();
             let end = tokio::select! {
                 incoming = rx.recv() => match incoming {
                     None => Some(SessionEnd::ClientGone),
@@ -166,11 +173,53 @@ impl Session {
                     self.try_reconnect().await;
                     None
                 }
+                _ = sleep_until_or_pending(ignore_expiry) => {
+                    self.drop_expired_ignores().await;
+                    None
+                }
             };
             if let Some(end) = end {
                 return end;
             }
         }
+    }
+
+    /// When the soonest `-time` ignore lapses, as a monotonic deadline.
+    ///
+    /// Rules carry a wall-clock expiry so clients can judge them too, so the
+    /// remaining span is converted afresh each time the loop arms the timer.
+    fn next_ignore_expiry(&self) -> Option<tokio::time::Instant> {
+        let soonest = self
+            .snapshot
+            .ignores
+            .iter()
+            .filter_map(|rule| rule.spec.expires_at_ms)
+            .min()?;
+        let remaining = soonest - chrono::Utc::now().timestamp_millis();
+        Some(
+            tokio::time::Instant::now()
+                + std::time::Duration::from_millis(remaining.max(0).unsigned_abs()),
+        )
+    }
+
+    /// Drop lapsed `-time` rules and tell the client, so hidden lines reappear.
+    async fn drop_expired_ignores(&mut self) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let expired: Vec<u32> = self
+            .snapshot
+            .ignores
+            .iter()
+            .filter(|rule| rule.expired(now))
+            .map(|rule| rule.id)
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+        self.snapshot.ignores.retain(|rule| !rule.expired(now));
+        for id in expired {
+            self.status(format!("ignore {id} expired")).await;
+        }
+        self.push_state().await;
     }
 
     /// One auto-reconnect attempt; on failure, schedule the next per backoff.
@@ -301,6 +350,36 @@ impl Session {
                     self.status("not connected").await;
                 }
             }
+            // Ignoring is about what we display, so it works while offline.
+            ClientCommand::Ignore(spec) => {
+                let id = self.next_ignore_id;
+                self.next_ignore_id += 1;
+                let rule = IgnoreRule { id, spec };
+                self.status(format!("ignore {id}: {}", rule.describe()))
+                    .await;
+                self.snapshot.ignores.push(rule);
+                self.push_state().await;
+            }
+            ClientCommand::Unignore { target } => {
+                let before = self.snapshot.ignores.len();
+                let by_id: Option<u32> = target.parse().ok();
+                self.snapshot.ignores.retain(|rule| {
+                    let matched = match by_id {
+                        Some(id) => rule.id == id,
+                        None => rule.spec.mask.as_deref() == Some(target.as_str()),
+                    };
+                    !matched
+                });
+                match before - self.snapshot.ignores.len() {
+                    0 => self.status(format!("no ignore matching {target}")).await,
+                    1 => self.status(format!("unignored {target}")).await,
+                    n => {
+                        self.status(format!("unignored {n} rules matching {target}"))
+                            .await
+                    }
+                }
+                self.push_state().await;
+            }
             cmd => {
                 let Some(conn) = &self.conn else {
                     self.emit(HistoryKind::Error {
@@ -412,7 +491,10 @@ impl Session {
                             return;
                         }
                     },
-                    ClientCommand::Connect { .. } | ClientCommand::Disconnect => {
+                    ClientCommand::Connect { .. }
+                    | ClientCommand::Disconnect
+                    | ClientCommand::Ignore(_)
+                    | ClientCommand::Unignore { .. } => {
                         unreachable!("handled above")
                     }
                 };
@@ -984,6 +1066,69 @@ mod tests {
         let snapshot = snapshot_with(vec![channel("#diku", &["sshine", "n_ko"])]);
         let part: Message = ":n_ko!~n@host PART #diku".parse().expect("parses");
         assert!(shared_channels(&snapshot, &part).is_empty());
+    }
+
+    fn spec_for(mask: &str) -> irciii_proto::ignore::IgnoreSpec {
+        irciii_proto::ignore::IgnoreSpec {
+            mask: Some(mask.into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn ignore_numbers_rules_and_unignore_takes_id_or_mask() {
+        let (tx, _rx) = mpsc::channel(64);
+        let mut session = Session::new(tx);
+
+        session
+            .handle_command(ClientCommand::Ignore(spec_for("spammer")))
+            .await;
+        session
+            .handle_command(ClientCommand::Ignore(spec_for("flooder")))
+            .await;
+        let ids: Vec<u32> = session.snapshot.ignores.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+
+        session
+            .handle_command(ClientCommand::Unignore { target: "1".into() })
+            .await;
+        assert_eq!(session.snapshot.ignores.len(), 1, "removed by id");
+
+        session
+            .handle_command(ClientCommand::Unignore {
+                target: "flooder".into(),
+            })
+            .await;
+        assert!(session.snapshot.ignores.is_empty(), "removed by mask");
+
+        // Ids are never reused, so a stale /unignore 1 cannot hit a new rule.
+        session
+            .handle_command(ClientCommand::Ignore(spec_for("spammer")))
+            .await;
+        assert_eq!(session.snapshot.ignores[0].id, 3);
+    }
+
+    #[tokio::test]
+    async fn expired_rules_are_dropped() {
+        let (tx, _rx) = mpsc::channel(64);
+        let mut session = Session::new(tx);
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut lapsed = spec_for("spammer");
+        lapsed.expires_at_ms = Some(now - 1);
+        let mut live = spec_for("flooder");
+        live.expires_at_ms = Some(now + 600_000);
+
+        session.handle_command(ClientCommand::Ignore(lapsed)).await;
+        session.handle_command(ClientCommand::Ignore(live)).await;
+        session.drop_expired_ignores().await;
+
+        let remaining: Vec<Option<&str>> = session
+            .snapshot
+            .ignores
+            .iter()
+            .map(|r| r.spec.mask.as_deref())
+            .collect();
+        assert_eq!(remaining, vec![Some("flooder")]);
     }
 
     #[test]
