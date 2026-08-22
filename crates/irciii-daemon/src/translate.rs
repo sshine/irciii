@@ -60,6 +60,13 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
             channel: channel.clone(),
             reason: reason.clone(),
         },
+        Command::KICK(channel, kicked, reason) => HistoryKind::Kick {
+            by: source(message),
+            userhost: userhost(message),
+            channel: channel.clone(),
+            kicked: kicked.clone(),
+            reason: reason.clone(),
+        },
         Command::QUIT(reason) => HistoryKind::QuitMsg {
             nick: source(message),
             userhost: userhost(message),
@@ -186,6 +193,20 @@ mod tests {
                 nick: "n_ko".into(),
                 userhost: Some("~n@host".into()),
                 reason: Some("leaving".into())
+            })
+        );
+    }
+
+    #[test]
+    fn kick_names_both_sides() {
+        assert_eq!(
+            translate(&msg(":op!~o@host KICK #diku n_ko :behave")),
+            Some(HistoryKind::Kick {
+                by: "op".into(),
+                userhost: Some("~o@host".into()),
+                channel: "#diku".into(),
+                kicked: "n_ko".into(),
+                reason: Some("behave".into())
             })
         );
     }

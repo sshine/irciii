@@ -75,6 +75,19 @@ pub enum HistoryKind {
         /// Optional part reason.
         reason: Option<String>,
     },
+    /// Someone was kicked from a channel.
+    Kick {
+        /// Nick that did the kicking.
+        by: String,
+        /// The `user@host` part of the kicker's prefix, if present.
+        userhost: Option<String>,
+        /// Channel the kick happened in.
+        channel: String,
+        /// Nick that was kicked.
+        kicked: String,
+        /// Optional kick reason.
+        reason: Option<String>,
+    },
     /// Someone quit the network.
     QuitMsg {
         /// Quitting nick.

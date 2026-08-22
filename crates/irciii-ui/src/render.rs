@@ -137,6 +137,20 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             },
             Style::default(),
         ),
+        HistoryKind::Kick {
+            by,
+            userhost,
+            channel,
+            kicked,
+            reason,
+        } => (
+            presence_gutter(&ts, by, userhost),
+            match reason {
+                Some(reason) => format!("has kicked {kicked} from {channel} ({reason})"),
+                None => format!("has kicked {kicked} from {channel}"),
+            },
+            Style::default(),
+        ),
         HistoryKind::QuitMsg {
             nick,
             userhost,
