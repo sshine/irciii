@@ -461,6 +461,10 @@ impl Session {
                 return;
             }
         };
+        // Must run before `track_state`, which drops the quitter from every
+        // channel and renames them on NICK; afterwards there is nothing to
+        // look up.
+        let shared = shared_channels(&self.snapshot, &message);
         self.track_state(&message).await;
         if self.absorb_whois(&message).await
             || self.absorb_who(&message).await
@@ -469,7 +473,12 @@ impl Session {
         {
             return;
         }
-        if let Some(kind) = translate(&message) {
+        if let Some(mut kind) = translate(&message) {
+            if let HistoryKind::QuitMsg { channels, .. }
+            | HistoryKind::NickChange { channels, .. } = &mut kind
+            {
+                *channels = shared;
+            }
             self.emit(kind).await;
         }
     }
@@ -858,6 +867,24 @@ async fn sleep_until_or_pending(at: Option<tokio::time::Instant>) {
     }
 }
 
+/// The channels we share with a message's sender, for the network-wide events
+/// (quit, nick change) that carry no channel of their own. Empty for every
+/// other command, which names its channel in the message itself.
+fn shared_channels(snapshot: &SessionSnapshot, message: &Message) -> Vec<String> {
+    if !matches!(message.command, Command::QUIT(_) | Command::NICK(_)) {
+        return Vec::new();
+    }
+    let Some(nick) = message.source_nickname() else {
+        return Vec::new();
+    };
+    snapshot
+        .targets
+        .iter()
+        .filter(|t| t.kind == TargetKind::Channel && t.members.iter().any(|m| m == nick))
+        .map(|t| t.name.clone())
+        .collect()
+}
+
 /// Split message text into chunks of at most `max_bytes`, breaking at the
 /// last space inside the budget when possible, and always on char boundaries.
 fn split_text(text: &str, max_bytes: usize) -> Vec<String> {
@@ -914,6 +941,50 @@ fn apply_mode_string(modes: &mut String, change: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn channel(name: &str, members: &[&str]) -> TargetInfo {
+        TargetInfo {
+            name: name.into(),
+            kind: TargetKind::Channel,
+            modes: String::new(),
+            topic: None,
+            members: members.iter().map(|m| (*m).to_string()).collect(),
+        }
+    }
+
+    fn snapshot_with(targets: Vec<TargetInfo>) -> SessionSnapshot {
+        SessionSnapshot {
+            nick: "sshine".into(),
+            targets,
+            ..SessionSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn quits_and_nicks_carry_only_the_channels_we_share() {
+        let snapshot = snapshot_with(vec![
+            channel("#diku", &["sshine", "n_ko"]),
+            channel("#rust", &["sshine"]),
+            TargetInfo {
+                kind: TargetKind::Query,
+                ..channel("n_ko", &["n_ko"])
+            },
+        ]);
+        let quit: Message = ":n_ko!~n@host QUIT :leaving".parse().expect("parses");
+        let nick: Message = ":n_ko!~n@host NICK newnick".parse().expect("parses");
+        // #rust lacks them and the query is not a channel, so neither shows up.
+        assert_eq!(shared_channels(&snapshot, &quit), vec!["#diku".to_string()]);
+        assert_eq!(shared_channels(&snapshot, &nick), vec!["#diku".to_string()]);
+    }
+
+    #[test]
+    fn channel_scoped_events_get_no_shared_channels() {
+        // A part already names its channel; only the network-wide events need
+        // the lookup, and doing it for the rest would be wasted work.
+        let snapshot = snapshot_with(vec![channel("#diku", &["sshine", "n_ko"])]);
+        let part: Message = ":n_ko!~n@host PART #diku".parse().expect("parses");
+        assert!(shared_channels(&snapshot, &part).is_empty());
+    }
 
     #[test]
     fn split_text_short_passthrough() {
