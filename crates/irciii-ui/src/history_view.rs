@@ -88,6 +88,12 @@ pub fn render(state: &mut UiState, area: Rect, buf: &mut Buffer) {
             break;
         }
         let h = height_of(state, idx, area.width, &opts) as usize;
+        // An ignored item occupies no lines, so it neither advances `covered`
+        // nor has anything to draw. Skipping here keeps the walk from
+        // re-rendering the whole log once the break condition stops firing.
+        if h == 0 {
+            continue;
+        }
         let item_top = covered + h;
         if item_top <= skip_bottom {
             covered = item_top;

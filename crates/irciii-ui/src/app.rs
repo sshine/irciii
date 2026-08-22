@@ -350,6 +350,14 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
     match msg {
         DaemonToClient::Hello { .. } => {}
         DaemonToClient::Snapshot(snapshot) | DaemonToClient::State(snapshot) => {
+            // Only the ignore list changes what is visible. Comparing whole
+            // snapshots would throw away the height cache on every join in a
+            // names burst, since the daemon pushes state for each one.
+            if state.snapshot.ignores != snapshot.ignores {
+                state.opts_gen += 1;
+                // Hidden items no longer occupy the lines the offset counted.
+                state.scroll_offset = 0;
+            }
             state.snapshot = snapshot.clone();
             // Keep the active target index in range if targets disappeared.
             if state.active_target > state.snapshot.targets.len() {
@@ -404,6 +412,16 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
 /// cannot outlive a dylib reload), and this keeps trait objects out of
 /// [`UiState`].
 fn run_hooks(state: &mut UiState, event: &HistoryItem) {
+    // An ignored event must not reach the hooks either, or a hook would echo
+    // back the content the rule was meant to hide.
+    if crate::ignore::is_ignored(
+        &state.snapshot.ignores,
+        event,
+        &state.snapshot.nick,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
+        return;
+    }
     let mut ctx = HookCtx::new(&state.snapshot.nick);
     for hook in &mut hooks::registry() {
         hook.on_event(event, &mut ctx);
@@ -732,6 +750,54 @@ mod tests {
         // The event itself plus the url-logger hook's status line.
         assert_eq!(state.history.len(), 2);
         assert_eq!(state.heights.len(), 2);
+    }
+
+    #[test]
+    fn an_ignored_event_reaches_history_but_not_the_hooks() {
+        let mut state = state_with_channel();
+        state.snapshot.ignores = vec![irciii_proto::ignore::IgnoreRule {
+            id: 1,
+            spec: irciii_proto::ignore::IgnoreSpec {
+                mask: Some("n_ko".into()),
+                ..Default::default()
+            },
+        }];
+        apply_msg(
+            &mut state,
+            &DaemonToClient::Event {
+                seq: 7,
+                item: HistoryItem::now(HistoryKind::Privmsg {
+                    nick: "n_ko".into(),
+                    userhost: None,
+                    target: "#diku".into(),
+                    text: "look at https://example.org".into(),
+                }),
+            },
+        );
+        // Kept in the log so /unignore can bring it back, but the url logger
+        // must not have echoed the link it was told to hide.
+        assert_eq!(state.history.len(), 1);
+    }
+
+    #[test]
+    fn only_an_ignore_change_invalidates_the_height_cache() {
+        let mut state = state_with_channel();
+        let mut snapshot = state.snapshot.clone();
+        let before = state.opts_gen;
+
+        // An ordinary state push (a join, say) must not clear the cache.
+        snapshot.targets[0].members.push("n_ko".into());
+        apply_msg(&mut state, &DaemonToClient::State(snapshot.clone()));
+        assert_eq!(state.opts_gen, before, "membership is not a render change");
+
+        state.scroll_offset = 12;
+        snapshot.ignores.push(irciii_proto::ignore::IgnoreRule {
+            id: 1,
+            spec: irciii_proto::ignore::IgnoreSpec::default(),
+        });
+        apply_msg(&mut state, &DaemonToClient::State(snapshot));
+        assert_eq!(state.opts_gen, before + 1, "heights must be re-measured");
+        assert_eq!(state.scroll_offset, 0, "hidden lines invalidate the offset");
     }
 
     #[test]

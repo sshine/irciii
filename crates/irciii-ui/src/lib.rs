@@ -6,6 +6,7 @@ pub mod api;
 pub mod app;
 pub mod history_view;
 pub mod hooks;
+pub mod ignore;
 pub mod input;
 pub mod render;
 pub mod status_bar;

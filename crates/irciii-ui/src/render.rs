@@ -23,6 +23,10 @@ pub struct RenderOpts {
     /// History viewport height in rows; the logo banner fills it (so its cell
     /// resolution scales with the terminal instead of a fixed coarse cap).
     pub viewport_rows: u16,
+    /// Active ignore rules; a matched item renders to nothing.
+    pub ignores: Vec<irciii_proto::ignore::IgnoreRule>,
+    /// Wall clock used to judge `-time` rules, so an expiry un-hides lines.
+    pub now_ms: i64,
 }
 
 impl Default for RenderOpts {
@@ -31,6 +35,8 @@ impl Default for RenderOpts {
             ts_format: "%H:%M:%S".into(),
             own_nick: String::new(),
             viewport_rows: 24,
+            ignores: Vec::new(),
+            now_ms: 0,
         }
     }
 }
@@ -42,6 +48,8 @@ impl RenderOpts {
             ts_format: state.ts_format.clone(),
             own_nick: state.snapshot.nick.clone(),
             viewport_rows: state.viewport_height,
+            ignores: state.snapshot.ignores.clone(),
+            now_ms: chrono::Utc::now().timestamp_millis(),
         }
     }
 }
@@ -72,6 +80,11 @@ fn ts_span(item: &HistoryItem, opts: &RenderOpts) -> String {
 /// Render one history item into wrapped lines. Continuation lines always
 /// indent by [`CONT_INDENT`] columns.
 pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Line<'static>> {
+    // An ignored item takes up no lines at all. Because this is decided here
+    // rather than when the item arrives, `/unignore` brings the lines back.
+    if crate::ignore::is_ignored(&opts.ignores, item, &opts.own_nick, opts.now_ms) {
+        return Vec::new();
+    }
     let ts = ts_span(item, opts);
     // Block items render on their own, without the gutter machinery and
     // without timestamps, so the border stays aligned at column 0.
@@ -879,6 +892,37 @@ mod tests {
         );
         // The logo is not a card, so `/clear` leaves it in the log.
         assert!(!HistoryKind::Logo.is_card());
+    }
+
+    #[test]
+    fn an_ignored_item_renders_no_lines_at_all() {
+        let opts = RenderOpts {
+            own_nick: "sshine".into(),
+            ignores: vec![irciii_proto::ignore::IgnoreRule {
+                id: 1,
+                spec: irciii_proto::ignore::IgnoreSpec {
+                    channels: vec!["#rust".into()],
+                    levels: irciii_proto::ignore::parse_levels("joins").expect("levels parse"),
+                    ..Default::default()
+                },
+            }],
+            ..RenderOpts::default()
+        };
+        let join = |channel: &str| {
+            item(HistoryKind::Join {
+                nick: "n_ko".into(),
+                userhost: None,
+                channel: channel.into(),
+            })
+        };
+        assert!(render_item(&join("#rust"), 80, &opts).is_empty());
+        assert_eq!(render_item(&join("#diku"), 80, &opts).len(), 1);
+        // Dropping the rule brings the line back: nothing was consumed.
+        let shown = RenderOpts {
+            ignores: Vec::new(),
+            ..opts
+        };
+        assert_eq!(render_item(&join("#rust"), 80, &shown).len(), 1);
     }
 
     #[test]
