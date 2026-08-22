@@ -1,5 +1,6 @@
 //! Parsing of the input line into actions.
 
+use irciii_proto::ignore::{IgnoreLevel, IgnoreSpec, is_channel, parse_levels, parse_time_ms};
 use irciii_proto::wire::ClientCommand;
 
 /// What an input line means.
@@ -15,7 +16,9 @@ pub enum InputAction {
     Exit(Option<String>),
     /// Show the command overview (`/help`).
     Help,
-    /// Remove clearable blocks (whois, help) from the log (`/clear`).
+    /// Show the active ignore rules (bare `/ignore`).
+    IgnoreList,
+    /// Remove clearable blocks (whois, help, ...) from the log (`/clear`).
     Clear,
     /// Local error (bad syntax, unknown command).
     Error(String),
@@ -26,7 +29,7 @@ pub enum InputAction {
 pub const COMMANDS: &[(&str, &str)] = &[
     (
         "clear",
-        "remove cards (whois/who/names/motd/help) from the log",
+        "remove cards (whois/who/names/motd/help/ignores) from the log",
     ),
     (
         "connect",
@@ -39,6 +42,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("disconnect", "leave the server, keep the session"),
     ("exit", "quit IRC and terminate daemon and client"),
     ("help", "show this command overview"),
+    (
+        "ignore",
+        "[-flags] <mask|#channel> [levels] — hide events; bare lists the rules",
+    ),
     ("join", "<channel> [key] — join a channel"),
     ("mode", "<target> [modes] — set or query modes"),
     ("msg", "<target> <text> — send a message"),
@@ -50,6 +57,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("quit", "same as /exit"),
     ("quote", "<raw line> — send a raw IRC line"),
     ("topic", "<channel> [topic] — set or show the topic"),
+    ("unignore", "<id|mask> — drop an ignore rule"),
     (
         "who",
         "[channel|mask] — list users (default: the active channel)",
@@ -141,6 +149,86 @@ pub fn complete_nick(input: &str, members: &[String]) -> Option<String> {
             (lcp > word.len()).then(|| format!("{head}{}", &first[..lcp]))
         }
     }
+}
+
+/// Whether a word names a level, so `-msgs` reads as a subtraction rather
+/// than an unknown flag.
+fn is_level_word(word: &str) -> bool {
+    word.eq_ignore_ascii_case("all") || IgnoreLevel::parse(word).is_some()
+}
+
+/// Parse `/ignore`'s arguments into a rule.
+///
+/// ```text
+/// /ignore [-regexp] [-full] [-except] [-replies] [-pattern <text>]
+///         [-channels <list>] [-time <span>] <mask|#channel> [<levels>]
+/// ```
+///
+/// A first argument that names a channel fills the channel list rather than
+/// the mask, which is what makes `/ignore #rust joins,parts,quits` mean what
+/// it looks like. Omitted levels mean every level, as in irssi.
+fn parse_ignore(rest: &str) -> Result<IgnoreSpec, String> {
+    let mut spec = IgnoreSpec::default();
+    let mut words = rest.split_whitespace();
+    let mut positional: Vec<&str> = Vec::new();
+    while let Some(word) = words.next() {
+        // A value-taking flag consumes the next word.
+        let mut value = |flag: &str| {
+            words
+                .next()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match word.to_ascii_lowercase().as_str() {
+            "-regexp" => spec.regexp = true,
+            "-full" => spec.full = true,
+            "-except" => spec.except = true,
+            "-replies" => spec.replies = true,
+            "-pattern" => spec.pattern = Some(value("-pattern")?),
+            "-channels" => {
+                spec.channels = value("-channels")?
+                    .split(',')
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            "-time" => {
+                let span = value("-time")?;
+                let ms = parse_time_ms(&span)
+                    .ok_or_else(|| format!("bad time span: {span} (try 30s, 5m, 2h, 1d)"))?;
+                spec.expires_at_ms = Some(chrono::Utc::now().timestamp_millis() + ms);
+            }
+            // One network per session, so scoping to one is always a no-op.
+            "-network" => return Err("-network: a session holds one network".into()),
+            // `all -msgs` subtracts a level, so a leading `-` alone does not
+            // make a word a flag.
+            other if other.starts_with('-') && !is_level_word(&other[1..]) => {
+                return Err(format!("unknown flag: {word}"));
+            }
+            _ => positional.push(word),
+        }
+    }
+    // Levels can be given as several words, so everything after the mask is
+    // one level list.
+    let (target, levels) = match positional.split_first() {
+        Some((target, levels)) => (*target, levels.join(" ")),
+        None => return Err("usage: /ignore [-flags] <mask|#channel> [levels]".into()),
+    };
+    if is_channel(target) {
+        spec.channels.push(target.to_string());
+    } else if target != "*" {
+        spec.mask = Some(target.to_string());
+    }
+    if !levels.is_empty() {
+        spec.levels = parse_levels(&levels).map_err(|bad| format!("unknown level: {bad}"))?;
+    }
+    if spec.regexp
+        && let Some(pattern) = &spec.pattern
+        && let Err(err) = regex::Regex::new(pattern)
+    {
+        return Err(format!("bad regexp: {err}"));
+    }
+    Ok(spec)
 }
 
 fn args2(rest: &str) -> Option<(String, String)> {
@@ -268,6 +356,15 @@ pub fn parse(line: &str) -> InputAction {
         "whois" if !rest.is_empty() => InputAction::Command(ClientCommand::Whois { nick: arg() }),
         // Bare /who: the app substitutes the active channel when there is one.
         "who" => InputAction::Command(ClientCommand::Who { mask: opt() }),
+        "ignore" if rest.is_empty() => InputAction::IgnoreList,
+        "ignore" => match parse_ignore(rest) {
+            Ok(spec) => InputAction::Command(ClientCommand::Ignore(spec)),
+            Err(err) => InputAction::Error(err),
+        },
+        "unignore" if !rest.is_empty() => {
+            InputAction::Command(ClientCommand::Unignore { target: arg() })
+        }
+        "unignore" => InputAction::Error("usage: /unignore <id|mask>".into()),
         "detach" => InputAction::Detach,
         "exit" | "quit" => InputAction::Exit(opt()),
         "help" => InputAction::Help,
@@ -369,5 +466,107 @@ mod tests {
     #[test]
     fn unknown_command() {
         assert!(matches!(parse("/frobnicate"), InputAction::Error(_)));
+    }
+
+    fn spec_of(line: &str) -> IgnoreSpec {
+        match parse(line) {
+            InputAction::Command(ClientCommand::Ignore(spec)) => spec,
+            other => panic!("expected an ignore rule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ignore_channel_and_levels() {
+        assert_eq!(
+            spec_of("/ignore #rust joins,parts,quits"),
+            IgnoreSpec {
+                channels: vec!["#rust".into()],
+                levels: parse_levels("joins,parts,quits").expect("levels parse"),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_channel_first_argument_is_not_a_mask() {
+        assert_eq!(spec_of("/ignore #rust joins").mask, None);
+        assert_eq!(
+            spec_of("/ignore spammer").mask,
+            Some("spammer".to_string()),
+            "a nick is a mask"
+        );
+        assert_eq!(spec_of("/ignore * public").mask, None, "* means anyone");
+    }
+
+    #[test]
+    fn omitted_levels_mean_every_level() {
+        assert!(
+            spec_of("/ignore spammer").levels.is_empty(),
+            "an empty level list is read as all"
+        );
+    }
+
+    #[test]
+    fn levels_may_be_spaced_and_subtracted() {
+        let spec = spec_of("/ignore spammer all -msgs");
+        assert!(!spec.levels.contains(&IgnoreLevel::Msgs));
+        assert!(spec.levels.contains(&IgnoreLevel::Public));
+    }
+
+    #[test]
+    fn flags_parse_and_take_their_values() {
+        let spec = spec_of("/ignore -except -replies -full -pattern spam -channels #a,#b n_ko");
+        assert!(spec.except && spec.replies && spec.full);
+        assert_eq!(spec.pattern.as_deref(), Some("spam"));
+        assert_eq!(spec.channels, vec!["#a".to_string(), "#b".to_string()]);
+        assert_eq!(spec.mask.as_deref(), Some("n_ko"));
+    }
+
+    #[test]
+    fn time_sets_an_expiry_in_the_future() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let at = spec_of("/ignore -time 5m spammer")
+            .expires_at_ms
+            .expect("a -time rule expires");
+        assert!(at > now, "expiry is ahead of now");
+        assert!(at <= now + 300_000, "5m is the upper bound");
+        assert!(matches!(
+            parse("/ignore -time 5x spammer"),
+            InputAction::Error(_)
+        ));
+    }
+
+    #[test]
+    fn bad_input_is_reported_rather_than_silently_inert() {
+        // A regexp that cannot compile would otherwise become a rule that
+        // never matches, with nothing to say why.
+        assert!(matches!(
+            parse("/ignore -regexp -pattern ([unclosed spammer"),
+            InputAction::Error(_)
+        ));
+        assert!(matches!(
+            parse("/ignore -nosuchflag x"),
+            InputAction::Error(_)
+        ));
+        assert!(matches!(
+            parse("/ignore spammer nosuchlevel"),
+            InputAction::Error(_)
+        ));
+        assert!(matches!(parse("/ignore -pattern"), InputAction::Error(_)));
+        // One network per session, so the flag can only mislead.
+        assert!(matches!(
+            parse("/ignore -network libera x"),
+            InputAction::Error(_)
+        ));
+    }
+
+    #[test]
+    fn bare_ignore_lists_and_unignore_takes_a_target() {
+        assert_eq!(parse("/ignore"), InputAction::IgnoreList);
+        assert_eq!(
+            parse("/unignore 3"),
+            InputAction::Command(ClientCommand::Unignore { target: "3".into() })
+        );
+        assert!(matches!(parse("/unignore"), InputAction::Error(_)));
     }
 }

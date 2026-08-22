@@ -333,6 +333,7 @@ fn submit_line(state: &mut UiState, line: &str) {
             state.should_quit = QuitKind::Exit;
         }
         InputAction::Help => emit_local(state, HistoryKind::Help),
+        InputAction::IgnoreList => emit_local(state, HistoryKind::IgnoreList),
         InputAction::Clear => {
             // Remove clearable blocks (whois, help) from the log entirely.
             state.history.retain(|item| !item.kind.is_card());

@@ -91,6 +91,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
     match &item.kind {
         HistoryKind::Whois(info) => return render_whois(info, width),
         HistoryKind::Help => return render_help(),
+        HistoryKind::IgnoreList => return render_ignore_list(opts),
         HistoryKind::NamesReply { channel, names, .. } => {
             return render_names(channel, names, width);
         }
@@ -205,6 +206,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         HistoryKind::Whois(_)
         | HistoryKind::Who { .. }
         | HistoryKind::Help
+        | HistoryKind::IgnoreList
         | HistoryKind::NamesReply { .. }
         | HistoryKind::Motd { .. }
         | HistoryKind::Logo => {
@@ -461,6 +463,49 @@ fn build_logo_lines(width: u16, rows: u16) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
+}
+
+/// Render the `/ignore` listing block (cleared by `/clear`).
+///
+/// Rendered from the live rules rather than a captured list, so a listing left
+/// in the scrollback keeps up as rules are added, dropped, or lapse.
+fn render_ignore_list(opts: &RenderOpts) -> Vec<Line<'static>> {
+    let label = crate::styles::accent();
+    let mut lines = vec![Line::from(Span::styled("┌ ignores", label))];
+    let active: Vec<_> = opts
+        .ignores
+        .iter()
+        .filter(|rule| !rule.expired(opts.now_ms))
+        .collect();
+    if active.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("│ ".to_string(), label),
+            Span::raw("none".to_string()),
+        ]));
+    }
+    for rule in active {
+        let mut spans = vec![
+            Span::styled("│ ".to_string(), label),
+            Span::styled(format!("{:<4}", rule.id), bold()),
+            Span::raw(rule.describe()),
+        ];
+        // An absolute time, not a countdown: cards only re-render when the
+        // height cache misses, so a relative one would sit frozen.
+        if let Some(at) = rule.spec.expires_at_ms
+            && let Some(at) = DateTime::from_timestamp_millis(at)
+        {
+            spans.push(Span::styled(
+                format!(
+                    " (until {})",
+                    at.with_timezone(&Local).format(&opts.ts_format)
+                ),
+                dim(),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(Span::styled("└".to_string(), label)));
+    lines
 }
 
 /// Render the `/help` overview block (cleared by `/clear`).
@@ -892,6 +937,46 @@ mod tests {
         );
         // The logo is not a card, so `/clear` leaves it in the log.
         assert!(!HistoryKind::Logo.is_card());
+    }
+
+    #[test]
+    fn the_ignore_list_renders_live_rules_as_a_card() {
+        let rule = irciii_proto::ignore::IgnoreRule {
+            id: 1,
+            spec: irciii_proto::ignore::IgnoreSpec {
+                channels: vec!["#rust".into()],
+                levels: irciii_proto::ignore::parse_levels("joins,parts,quits")
+                    .expect("levels parse"),
+                ..Default::default()
+            },
+        };
+        let lapsed = irciii_proto::ignore::IgnoreRule {
+            id: 2,
+            spec: irciii_proto::ignore::IgnoreSpec {
+                mask: Some("spammer".into()),
+                expires_at_ms: Some(1_600_000_000_000),
+                ..Default::default()
+            },
+        };
+        let opts = RenderOpts {
+            ignores: vec![rule, lapsed],
+            now_ms: 1_700_000_000_000,
+            ..RenderOpts::default()
+        };
+        let lines = plain(&render_item(&item(HistoryKind::IgnoreList), 80, &opts));
+        assert_eq!(lines[0], "┌ ignores");
+        assert_eq!(lines[1], "│ 1   -channels #rust * joins,parts,quits");
+        // The lapsed rule is gone from the listing, not shown as dead weight.
+        assert_eq!(lines.len(), 3, "header, one rule, footer: {lines:?}");
+
+        let empty = plain(&render_item(
+            &item(HistoryKind::IgnoreList),
+            80,
+            &RenderOpts::default(),
+        ));
+        assert_eq!(empty[1], "│ none");
+        // A card, so /clear takes it out of the log.
+        assert!(HistoryKind::IgnoreList.is_card());
     }
 
     #[test]
