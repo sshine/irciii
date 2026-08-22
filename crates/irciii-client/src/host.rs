@@ -20,6 +20,17 @@ pub enum HostError {
     /// The daemon channel closed unexpectedly.
     #[error("daemon connection lost")]
     DaemonGone,
+    /// The daemon speaks a different protocol version.
+    #[error(
+        "protocol mismatch: this client speaks version {ours}, the daemon speaks {theirs} \
+         (the running daemon predates this build; /exit it and start a new session)"
+    )]
+    ProtoMismatch {
+        /// The client's [`PROTO_VERSION`].
+        ours: u16,
+        /// The version the daemon announced.
+        theirs: u16,
+    },
 }
 
 /// Run the TUI against a daemon channel pair until the user detaches or exits.
@@ -74,6 +85,16 @@ async fn event_loop(
                 let Some(msg) = msg else {
                     return Err(HostError::DaemonGone);
                 };
+                // A mismatched daemon replies to our Hello with its own, then
+                // closes; without this the Bye reads as an ordinary detach.
+                if let DaemonToClient::Hello { proto_version, .. } = msg
+                    && proto_version != PROTO_VERSION
+                {
+                    return Err(HostError::ProtoMismatch {
+                        ours: PROTO_VERSION,
+                        theirs: proto_version,
+                    });
+                }
                 ui.apply_msg(state, &msg);
             }
             _ = tick.tick() => {
