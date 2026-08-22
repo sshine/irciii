@@ -124,3 +124,115 @@ pub fn render(state: &mut UiState, area: Rect, buf: &mut Buffer) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use irciii_proto::history::{HistoryItem, HistoryKind};
+    use irciii_proto::ignore::{IgnoreRule, IgnoreSpec, parse_levels};
+
+    /// A log of one message per channel, surrounded by join noise.
+    fn state_with_noise() -> UiState {
+        let mut state = UiState {
+            ts_format: "%H:%M:%S".into(),
+            ..Default::default()
+        };
+        state.snapshot.nick = "sshine".into();
+        for channel in ["#rust", "#diku"] {
+            for nick in ["a_nick", "b_nick"] {
+                state.history.push(HistoryItem::now(HistoryKind::Join {
+                    nick: nick.into(),
+                    userhost: None,
+                    channel: channel.into(),
+                }));
+            }
+            state.history.push(HistoryItem::now(HistoryKind::Privmsg {
+                nick: "n_ko".into(),
+                userhost: None,
+                target: channel.into(),
+                text: format!("talking in {channel}"),
+            }));
+        }
+        state.heights = vec![None; state.history.len()];
+        state
+    }
+
+    fn drawn(state: &mut UiState, area: Rect) -> Vec<String> {
+        let mut buf = Buffer::empty(area);
+        clamp_scroll(state, area.width, area.height);
+        render(state, area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn ignored_items_vanish_from_the_viewport_and_come_back() {
+        let area = Rect::new(0, 0, 80, 10);
+        let mut state = state_with_noise();
+        assert_eq!(drawn(&mut state, area).len(), 6, "everything is shown");
+
+        state.snapshot.ignores = vec![IgnoreRule {
+            id: 1,
+            spec: IgnoreSpec {
+                channels: vec!["#rust".into()],
+                levels: parse_levels("joins").expect("levels parse"),
+                ..Default::default()
+            },
+        }];
+        state.opts_gen += 1;
+        let lines = drawn(&mut state, area);
+        assert_eq!(lines.len(), 4, "the two #rust joins are gone: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("talking in #rust")));
+        assert!(lines.iter().any(|l| l.contains("has joined #diku")));
+        assert!(!lines.iter().any(|l| l.contains("has joined #rust")));
+
+        state.snapshot.ignores.clear();
+        state.opts_gen += 1;
+        assert_eq!(drawn(&mut state, area).len(), 6, "/unignore restores them");
+    }
+
+    #[test]
+    fn a_fully_ignored_log_renders_nothing_without_hanging() {
+        // Every item hidden is the case where the viewport walk's break
+        // condition stops firing, so it has to terminate on its own.
+        let area = Rect::new(0, 0, 80, 10);
+        let mut state = state_with_noise();
+        state.snapshot.ignores = vec![IgnoreRule {
+            id: 1,
+            spec: IgnoreSpec::default(),
+        }];
+        state.opts_gen += 1;
+        assert!(drawn(&mut state, area).is_empty());
+        assert_eq!(state.scroll_offset, 0, "nothing to scroll through");
+    }
+
+    #[test]
+    fn scrolling_counts_only_visible_lines() {
+        // A viewport shorter than the log, with half of it hidden: the offset
+        // must clamp against what is actually rendered, not the raw history.
+        let area = Rect::new(0, 0, 80, 2);
+        let mut state = state_with_noise();
+        state.snapshot.ignores = vec![IgnoreRule {
+            id: 1,
+            spec: IgnoreSpec {
+                levels: parse_levels("joins").expect("levels parse"),
+                ..Default::default()
+            },
+        }];
+        state.opts_gen += 1;
+        // Two messages survive, exactly filling the viewport, so there is
+        // nothing above to scroll to.
+        state.scroll_offset = 50;
+        let lines = drawn(&mut state, area);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(state.scroll_offset, 0, "clamped to the visible extent");
+    }
+}
