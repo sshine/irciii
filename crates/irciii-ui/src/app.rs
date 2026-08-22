@@ -33,12 +33,6 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
         return;
     }
 
-    // Any key skips the startup splash.
-    if chrono::Utc::now().timestamp_millis() < state.splash_until_ms {
-        state.splash_until_ms = 0;
-        return;
-    }
-
     // An open modal captures input until Esc dismisses it.
     if state.modal.is_some() {
         if matches!(Input::from(*key), Input::Esc) {
@@ -424,10 +418,6 @@ fn run_hooks(state: &mut UiState, event: &HistoryItem) {
 /// Render the full client: history, status bar, and the promptui text field
 /// (which grows with its content, up to its max height).
 pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
-    if chrono::Utc::now().timestamp_millis() < state.splash_until_ms {
-        crate::splash::render(frame);
-        return;
-    }
     let width = frame.area().width;
     let input_height = text_input::with_field(state, |field| field.required_height(width));
     let chunks = Layout::vertical([
@@ -437,7 +427,12 @@ pub fn render(state: &mut UiState, frame: &mut Frame<'_>) {
     ])
     .split(frame.area());
 
-    state.viewport_height = chunks[0].height;
+    // The logo banner is rendered to fill the viewport, so its height depends
+    // on the viewport height; a height change must re-measure the cache.
+    if state.viewport_height != chunks[0].height {
+        state.viewport_height = chunks[0].height;
+        state.opts_gen += 1;
+    }
     history_view::clamp_scroll(state, chunks[0].width, chunks[0].height);
     history_view::render(state, chunks[0], frame.buffer_mut());
     status_bar::render(state, chunks[1], frame.buffer_mut());
@@ -525,7 +520,10 @@ mod tests {
 
     fn state_with_channel() -> UiState {
         let mut state = UiState::new();
-        state.splash_until_ms = 0; // tests don't want keys eaten by the splash
+        // Start from an empty log so these tests count only what they emit,
+        // not the logo banner that `new()` seeds at the top of the history.
+        state.history.clear();
+        state.heights.clear();
         state.snapshot = SessionSnapshot {
             connected_to: Some("irc.libera.chat".into()),
             nick: "sshine".into(),

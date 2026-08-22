@@ -67,9 +67,6 @@ pub struct UiState {
     pub input_draft: String,
     /// Text killed by ^U, restored by ^Y.
     pub kill_ring: String,
-    /// Show the startup splash until this unix-millisecond timestamp; any key
-    /// skips it.
-    pub splash_until_ms: i64,
     /// An open modal overlay; Esc dismisses it.
     pub modal: Option<Modal>,
     /// Replica of the daemon's session snapshot (status bar contents).
@@ -89,11 +86,13 @@ pub struct UiState {
 }
 
 impl UiState {
-    /// A fresh state with irciii defaults (including a 3-second splash).
+    /// A fresh state with irciii defaults, seeded with the logo banner at the
+    /// top of the history (it scrolls out of sight as lines arrive).
     pub fn new() -> Self {
         Self {
             ts_format: "%H:%M:%S".into(),
-            splash_until_ms: chrono::Utc::now().timestamp_millis() + 3_000,
+            history: vec![HistoryItem::now(crate::history::HistoryKind::Logo)],
+            heights: vec![None],
             ..Self::default()
         }
     }

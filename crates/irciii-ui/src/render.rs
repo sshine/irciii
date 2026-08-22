@@ -20,6 +20,9 @@ pub struct RenderOpts {
     pub ts_format: String,
     /// Our own nick, rendered bold to stand out.
     pub own_nick: String,
+    /// History viewport height in rows; the logo banner fills it (so its cell
+    /// resolution scales with the terminal instead of a fixed coarse cap).
+    pub viewport_rows: u16,
 }
 
 impl Default for RenderOpts {
@@ -27,6 +30,7 @@ impl Default for RenderOpts {
         Self {
             ts_format: "%H:%M:%S".into(),
             own_nick: String::new(),
+            viewport_rows: 24,
         }
     }
 }
@@ -37,6 +41,7 @@ impl RenderOpts {
         Self {
             ts_format: state.ts_format.clone(),
             own_nick: state.snapshot.nick.clone(),
+            viewport_rows: state.viewport_height,
         }
     }
 }
@@ -78,6 +83,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         }
         HistoryKind::Who { mask, entries } => return render_who(mask, entries),
         HistoryKind::Motd { server, lines } => return render_motd(server, lines, width),
+        HistoryKind::Logo => return render_logo(width, opts.viewport_rows),
         _ => {}
     }
     let (gutter_spans, text, text_style) = match &item.kind {
@@ -172,7 +178,8 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         | HistoryKind::Who { .. }
         | HistoryKind::Help
         | HistoryKind::NamesReply { .. }
-        | HistoryKind::Motd { .. } => {
+        | HistoryKind::Motd { .. }
+        | HistoryKind::Logo => {
             unreachable!("handled above")
         }
     };
@@ -360,6 +367,72 @@ fn render_whois(info: &irciii_proto::history::WhoisInfo, width: u16) -> Vec<Line
     }
     lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
+}
+
+/// The logo PNG, embedded at compile time.
+static LOGO_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../irciii-logo.png"
+));
+
+/// Render the embedded irciii logo as ANSI block art, fit to the full history
+/// viewport (`width` × `rows`) and centered. Filling the viewport gives the
+/// block art enough cells to resolve the logo instead of a coarse thumbnail;
+/// it then scrolls out of sight as lines arrive. The rendered lines are cached
+/// per size: decoding and cell rendering only happen when the size changes.
+fn render_logo(width: u16, rows: u16) -> Vec<Line<'static>> {
+    thread_local! {
+        #[expect(clippy::type_complexity, reason = "a simple size-keyed cache")]
+        static CACHE: std::cell::RefCell<Option<((u16, u16), Vec<Line<'static>>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    CACHE.with(|cache| {
+        if let Some((size, lines)) = &*cache.borrow()
+            && *size == (width, rows)
+        {
+            return lines.clone();
+        }
+        let lines = build_logo_lines(width, rows);
+        *cache.borrow_mut() = Some(((width, rows), lines.clone()));
+        lines
+    })
+}
+
+/// Decode the logo and turn its cell grid into styled, centered lines. Runs of
+/// same-colored cells are merged into one span to keep the line span count low.
+fn build_logo_lines(width: u16, rows: u16) -> Vec<Line<'static>> {
+    let Ok(img) = graphix::image::load_from_memory(LOGO_PNG) else {
+        return vec![Line::from("")];
+    };
+    let img = img.to_rgb8();
+    let (w, h) = img.dimensions();
+    let (cols, rows) = graphix::fit_grid(w, h, u32::from(width), u32::from(rows.max(1)));
+    let grid = graphix::render_cells(&img, cols, rows);
+    let pad = " ".repeat((usize::from(width).saturating_sub(cols as usize)) / 2);
+    grid.iter()
+        .map(|row| {
+            let mut spans = vec![Span::raw(pad.clone())];
+            let mut run = String::new();
+            let mut run_style: Option<Style> = None;
+            for cell in row {
+                let style = Style::default()
+                    .fg(Color::Rgb(cell.fg.r, cell.fg.g, cell.fg.b))
+                    .bg(Color::Rgb(cell.bg.r, cell.bg.g, cell.bg.b));
+                if run_style != Some(style) && !run.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut run),
+                        run_style.unwrap_or_default(),
+                    ));
+                }
+                run_style = Some(style);
+                run.push(cell.ch);
+            }
+            if !run.is_empty() {
+                spans.push(Span::styled(run, run_style.unwrap_or_default()));
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// Render the `/help` overview block (cleared by `/clear`).
@@ -754,6 +827,38 @@ mod tests {
         // Same item renders differently under a different format: the gutter
         // shrinks by the ":SS" part.
         assert_eq!(hms[0].len(), hm[0].len() + 3);
+    }
+
+    #[test]
+    fn logo_fills_the_viewport_and_stays_within_bounds() {
+        // A wide viewport so the row budget (not the width) binds the fit.
+        let opts = RenderOpts {
+            viewport_rows: 20,
+            ..RenderOpts::default()
+        };
+        let lines = render_item(&item(HistoryKind::Logo), 200, &opts);
+        // A non-empty banner bounded by the viewport, no line overflowing width.
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= opts.viewport_rows as usize);
+        for line in &lines {
+            let w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            assert!(w <= 200, "logo line exceeds width: {w}");
+        }
+        // A taller viewport yields a higher-resolution (taller) render.
+        let taller = render_item(
+            &item(HistoryKind::Logo),
+            200,
+            &RenderOpts {
+                viewport_rows: 40,
+                ..RenderOpts::default()
+            },
+        );
+        assert!(
+            taller.len() > lines.len(),
+            "more rows should mean more detail"
+        );
+        // The logo is not a card, so `/clear` leaves it in the log.
+        assert!(!HistoryKind::Logo.is_card());
     }
 
     #[test]

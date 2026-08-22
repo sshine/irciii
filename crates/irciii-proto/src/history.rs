@@ -152,6 +152,10 @@ pub enum HistoryKind {
     },
     /// The `/help` command overview, rendered as one block.
     Help,
+    /// The irciii logo banner, rendered as ANSI block art. Injected once at
+    /// the top of a fresh client's history; scrolls out of sight as lines
+    /// arrive (client-local, never sent to the daemon).
+    Logo,
 }
 
 impl HistoryKind {
