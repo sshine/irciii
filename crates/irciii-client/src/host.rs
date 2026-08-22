@@ -6,7 +6,7 @@
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use irciii_proto::ui_state::{QuitKind, UiState};
-use irciii_proto::wire::{ClientToDaemon, DaemonToClient, PROTO_VERSION};
+use irciii_proto::wire::{ClientCommand, ClientToDaemon, DaemonToClient, PROTO_VERSION};
 use tokio::sync::mpsc;
 
 use crate::ui::Ui;
@@ -23,9 +23,13 @@ pub enum HostError {
 }
 
 /// Run the TUI against a daemon channel pair until the user detaches or exits.
+///
+/// `startup` is a command to run once attached, e.g. the connect implied by
+/// `irciii <server> <port>`.
 pub async fn run(
     tx: mpsc::Sender<ClientToDaemon>,
     mut rx: mpsc::Receiver<DaemonToClient>,
+    startup: Option<ClientCommand>,
 ) -> Result<QuitKind, HostError> {
     let mut state = UiState::new();
     let mut ui = Ui::new();
@@ -36,6 +40,9 @@ pub async fn run(
         })
         .await;
     let _ = tx.send(ClientToDaemon::Attach { replay_from_seq: 0 }).await;
+    if let Some(cmd) = startup {
+        let _ = tx.send(ClientToDaemon::Command(cmd)).await;
+    }
 
     let mut terminal = ratatui::init();
     let result = event_loop(&mut state, &mut ui, &tx, &mut rx, &mut terminal).await;

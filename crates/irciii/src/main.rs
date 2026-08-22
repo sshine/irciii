@@ -7,12 +7,33 @@ use clap::{Parser, Subcommand};
 use irciii_daemon::server::DEFAULT_LISTEN;
 use irciii_proto::session_file;
 use irciii_proto::ui_state::QuitKind;
+use irciii_proto::wire::ClientCommand;
 use uuid::Uuid;
 
 /// A minimal irssi-like terminal IRC client.
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
+    /// Server to connect to on startup.
+    #[arg(value_name = "SERVER", requires = "port", conflicts_with = "attach")]
+    server: Option<String>,
+
+    /// Port of the server (6697 is the usual TLS port).
+    #[arg(value_name = "PORT")]
+    port: Option<u16>,
+
+    /// Channel to join once connected.
+    #[arg(value_name = "CHANNEL", requires = "server")]
+    channel: Option<String>,
+
+    /// Connect without TLS.
+    #[arg(long, requires = "server")]
+    no_tls: bool,
+
+    /// Nick to use instead of $USER.
+    #[arg(long, value_name = "NICK", requires = "server")]
+    nick: Option<String>,
+
     /// Attach to a running session by id (printed on /detach).
     #[arg(long, value_name = "SESSION_ID")]
     attach: Option<Uuid>,
@@ -70,12 +91,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         None => match args.attach {
-            Some(session) => run_client(session, args.daemon, args.fingerprint).await,
+            Some(session) => run_client(session, args.daemon, args.fingerprint, None).await,
             None => {
+                let startup = args.server.map(|server| ClientCommand::Connect {
+                    server,
+                    port: args.port.unwrap_or(if args.no_tls { 6667 } else { 6697 }),
+                    tls: !args.no_tls,
+                    nick: args.nick,
+                    channels: args.channel.into_iter().collect(),
+                });
                 let session = Uuid::new_v4();
                 spawn_daemon(session, &args.listen)?;
                 wait_for_session_file(session).await?;
-                run_client(session, None, None).await
+                run_client(session, None, None, startup).await
             }
         },
     }
@@ -144,6 +172,7 @@ async fn run_client(
     session: Uuid,
     daemon: Option<String>,
     fingerprint: Option<String>,
+    startup: Option<ClientCommand>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Remote attach: explicit address + pinned fingerprint. Local attach:
     // both come from the session file.
@@ -161,7 +190,7 @@ async fn run_client(
         }
     };
     let (tx, rx, pump) = irciii_client::net::connect(&host, port, &fingerprint).await?;
-    let quit = irciii_client::host::run(tx, rx).await?;
+    let quit = irciii_client::host::run(tx, rx, startup).await?;
     // Let the pump flush queued Detach/Exit frames to the daemon.
     let _ = tokio::time::timeout(Duration::from_secs(2), pump).await;
     match quit {

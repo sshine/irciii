@@ -51,7 +51,8 @@ pub struct Session {
     user_disconnected: bool,
     /// Pending auto-reconnect: (attempt number, when to try next).
     reconnect: Option<(usize, tokio::time::Instant)>,
-    /// Channels to rejoin once registration completes after a reconnect.
+    /// Channels to join once registration completes: the autojoin list of a
+    /// `/connect`, or the channels we were in before a reconnect.
     rejoin: Vec<String>,
 }
 
@@ -250,6 +251,7 @@ impl Session {
                 port,
                 tls,
                 nick,
+                channels,
             } => {
                 let nick = nick.unwrap_or_else(|| {
                     std::env::var("USER").unwrap_or_else(|_| "irciii".to_string())
@@ -266,7 +268,7 @@ impl Session {
                 self.last_params = Some(params.clone());
                 self.user_disconnected = false;
                 self.reconnect = None;
-                self.rejoin.clear();
+                self.rejoin = channels;
                 match Connection::connect(params).await {
                     Ok(conn) => {
                         self.conn = Some(conn);
@@ -674,7 +676,7 @@ impl Session {
                     self.snapshot.nick = nick.clone();
                     changed = true;
                 }
-                // Registration complete after a reconnect: rejoin channels.
+                // Registration complete: join the autojoin/rejoin channels.
                 if !self.rejoin.is_empty()
                     && let Some(conn) = &self.conn
                 {

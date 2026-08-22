@@ -30,7 +30,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "connect",
-        "[-notls] <server> [port] [nick] — connect (TLS by default)",
+        "[-notls] <server> [port] [nick] [#chan...] — connect (TLS by default)",
     ),
     (
         "detach",
@@ -151,8 +151,8 @@ fn args2(rest: &str) -> Option<(String, String)> {
 
 /// Parse one submitted input line.
 ///
-/// `/connect [-notls] <server> [port] [nick]` uses TLS by default (port 6697);
-/// `-notls` switches the default port to 6667.
+/// `/connect [-notls] <server> [port] [nick] [#channel...]` uses TLS by
+/// default (port 6697); `-notls` switches the default port to 6667.
 pub fn parse(line: &str) -> InputAction {
     let line = line.trim_end();
     if line.is_empty() {
@@ -181,7 +181,7 @@ pub fn parse(line: &str) -> InputAction {
             };
             let Some(server) = words.next() else {
                 return InputAction::Error(
-                    "usage: /connect [-notls] <server> [port] [nick]".into(),
+                    "usage: /connect [-notls] <server> [port] [nick] [#channel...]".into(),
                 );
             };
             let default_port = if tls { 6697 } else { 6667 };
@@ -192,11 +192,23 @@ pub fn parse(line: &str) -> InputAction {
                 },
                 None => default_port,
             };
+            // Nicks cannot start with '#', so channels and the nick override
+            // are distinguishable wherever they appear.
+            let mut nick = None;
+            let mut channels = Vec::new();
+            for word in words {
+                if word.starts_with('#') {
+                    channels.push(word.to_string());
+                } else if nick.is_none() {
+                    nick = Some(word.to_string());
+                }
+            }
             InputAction::Command(ClientCommand::Connect {
                 server: server.to_string(),
                 port,
                 tls,
-                nick: words.next().map(str::to_string),
+                nick,
+                channels,
             })
         }
         "join" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
@@ -283,6 +295,7 @@ mod tests {
                 port: 6697,
                 tls: true,
                 nick: None,
+                channels: Vec::new(),
             })
         );
         assert_eq!(
@@ -292,6 +305,7 @@ mod tests {
                 port: 6667,
                 tls: false,
                 nick: None,
+                channels: Vec::new(),
             })
         );
         assert_eq!(
@@ -301,6 +315,31 @@ mod tests {
                 port: 6697,
                 tls: true,
                 nick: Some("sshine".into()),
+                channels: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn connect_autojoins_channels_in_any_position() {
+        assert_eq!(
+            parse("/connect irc.libera.chat 6697 #rust #nixos"),
+            InputAction::Command(ClientCommand::Connect {
+                server: "irc.libera.chat".into(),
+                port: 6697,
+                tls: true,
+                nick: None,
+                channels: vec!["#rust".into(), "#nixos".into()],
+            })
+        );
+        assert_eq!(
+            parse("/connect irc.libera.chat 6697 #rust sshine"),
+            InputAction::Command(ClientCommand::Connect {
+                server: "irc.libera.chat".into(),
+                port: 6697,
+                tls: true,
+                nick: Some("sshine".into()),
+                channels: vec!["#rust".into()],
             })
         );
     }
