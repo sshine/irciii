@@ -38,7 +38,7 @@ readme_args := "--project-root crates/irciii --no-title --no-license --no-badges
 
 # Regenerate README.md from the irciii crate docs
 readme:
-    cargo readme {{readme_args}} -o README.md
+    cargo readme {{readme_args}} > README.md
 
 # Check README.md is in sync with the crate docs
 readme-check:
