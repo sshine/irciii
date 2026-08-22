@@ -35,17 +35,20 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
         {
             Some(action) => HistoryKind::Action {
                 nick: source(message),
+                userhost: userhost(message),
                 target: target.clone(),
                 text: action.to_string(),
             },
             None => HistoryKind::Privmsg {
                 nick: source(message),
+                userhost: userhost(message),
                 target: target.clone(),
                 text: text.clone(),
             },
         },
         Command::NOTICE(target, text) => HistoryKind::Notice {
             from: source(message),
+            userhost: userhost(message),
             target: target.clone(),
             text: text.clone(),
         },
@@ -67,14 +70,18 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
             kicked: kicked.clone(),
             reason: reason.clone(),
         },
+        // `channels` needs the membership the session tracks, which this
+        // function does not see; the session fills it in.
         Command::QUIT(reason) => HistoryKind::QuitMsg {
             nick: source(message),
             userhost: userhost(message),
+            channels: Vec::new(),
             reason: reason.clone(),
         },
         Command::NICK(new) => HistoryKind::NickChange {
             old: source(message),
             new: new.clone(),
+            channels: Vec::new(),
         },
         Command::ChannelMODE(target, modes) => HistoryKind::Mode {
             by: source(message),
@@ -147,6 +154,7 @@ mod tests {
             kind,
             Some(HistoryKind::Privmsg {
                 nick: "zfnmxt".into(),
+                userhost: Some("~z@host".into()),
                 target: "#diku".into(),
                 text: "I have dual citizenship.".into(),
             })
@@ -162,6 +170,7 @@ mod tests {
             kind,
             Some(HistoryKind::Action {
                 nick: "sshine".into(),
+                userhost: Some("~s@host".into()),
                 target: "#diku".into(),
                 text: "imagines a conversation".into(),
             })
@@ -192,6 +201,7 @@ mod tests {
             Some(HistoryKind::QuitMsg {
                 nick: "n_ko".into(),
                 userhost: Some("~n@host".into()),
+                channels: Vec::new(),
                 reason: Some("leaving".into())
             })
         );

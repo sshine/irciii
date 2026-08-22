@@ -535,6 +535,7 @@ mod tests {
                 topic: None,
                 members: Vec::new(),
             }],
+            ignores: Vec::new(),
         };
         state.active_target = 1;
         state
@@ -716,6 +717,7 @@ mod tests {
         let mut state = state_with_channel();
         let item = HistoryItem::now(HistoryKind::Privmsg {
             nick: "n_ko".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "look at https://example.org".into(),
         });

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::history::HistoryItem;
 
 /// Protocol version; both sides send it in their `Hello` and refuse a mismatch.
-pub const PROTO_VERSION: u16 = 2;
+pub const PROTO_VERSION: u16 = 3;
 
 /// Messages sent from the client (TUI) to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +171,9 @@ pub struct SessionSnapshot {
     pub user_modes: String,
     /// Channels and query buffers, in join order.
     pub targets: Vec<TargetInfo>,
+    /// Active ignore rules. The daemon owns them so they outlive a detach;
+    /// clients apply them when rendering.
+    pub ignores: Vec<crate::ignore::IgnoreRule>,
 }
 
 /// A channel or query buffer.

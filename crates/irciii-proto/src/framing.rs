@@ -114,6 +114,7 @@ mod tests {
                 ts_ms: 1_700_000_000_000,
                 kind: HistoryKind::Privmsg {
                     nick: "sshine".into(),
+                    userhost: Some("~s@host".into()),
                     target: "#diku".into(),
                     text: "so did Oppenheimer!".into(),
                 },

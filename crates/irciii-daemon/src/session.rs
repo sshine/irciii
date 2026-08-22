@@ -336,6 +336,7 @@ impl Session {
                             // echo-message cap); record it ourselves.
                             let kind = HistoryKind::Privmsg {
                                 nick: self.our_nick().to_string(),
+                                userhost: None,
                                 target: target.clone(),
                                 text: chunk,
                             };
@@ -352,6 +353,7 @@ impl Session {
                             }
                             let kind = HistoryKind::Notice {
                                 from: self.our_nick().to_string(),
+                                userhost: None,
                                 target: target.clone(),
                                 text: chunk,
                             };

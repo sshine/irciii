@@ -155,6 +155,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             nick,
             userhost,
             reason,
+            ..
         } => (
             presence_gutter(&ts, nick, userhost),
             match reason {
@@ -163,7 +164,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             },
             Style::default(),
         ),
-        HistoryKind::NickChange { old, new } => status_line(
+        HistoryKind::NickChange { old, new, .. } => status_line(
             &ts,
             format!("{old} is now known as {new}"),
             crate::styles::ACCENT,
@@ -633,6 +634,7 @@ mod tests {
     fn privmsg_continuations_indent_two_columns() {
         let it = item(HistoryKind::Privmsg {
             nick: "sshine".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "the question is, can you degrade your familiarity without degrading \
                    the quality of what you make?"
@@ -666,6 +668,7 @@ mod tests {
     fn own_nick_is_bold_others_plain() {
         let it = item(HistoryKind::Privmsg {
             nick: "sshine".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "hi".into(),
         });
@@ -700,6 +703,7 @@ mod tests {
         };
         let it = item(HistoryKind::Privmsg {
             nick: "n_ko".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "sshine, are you also into quantum computing? Sshine?".into(),
         });
@@ -716,6 +720,7 @@ mod tests {
         // Substrings are not mentions.
         let it = item(HistoryKind::Privmsg {
             nick: "n_ko".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "sshines stuff is not a mention".into(),
         });
@@ -725,6 +730,7 @@ mod tests {
         // Our own messages are not highlighted.
         let it = item(HistoryKind::Privmsg {
             nick: "sshine".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "talking about sshine myself".into(),
         });

@@ -32,6 +32,9 @@ pub enum HistoryKind {
     Privmsg {
         /// Sender nick.
         nick: String,
+        /// The `user@host` part of the sender prefix, if present. Absent on
+        /// our own outgoing messages; ignore masks need it to match a host.
+        userhost: Option<String>,
         /// Channel or query target the message was sent to.
         target: String,
         /// Message body.
@@ -41,6 +44,8 @@ pub enum HistoryKind {
     Action {
         /// Sender nick.
         nick: String,
+        /// The `user@host` part of the sender prefix, if present.
+        userhost: Option<String>,
         /// Channel or query target.
         target: String,
         /// Action body.
@@ -50,6 +55,8 @@ pub enum HistoryKind {
     Notice {
         /// Sender (nick or server name).
         from: String,
+        /// The `user@host` part of the sender prefix, if present.
+        userhost: Option<String>,
         /// Target of the notice.
         target: String,
         /// Notice body.
@@ -94,6 +101,9 @@ pub enum HistoryKind {
         nick: String,
         /// The `user@host` part of the sender prefix, if present.
         userhost: Option<String>,
+        /// Channels we shared with them when they quit. A quit is network
+        /// wide, so this is what gives it a channel scope to be ignored by.
+        channels: Vec<String>,
         /// Optional quit reason.
         reason: Option<String>,
     },
@@ -103,6 +113,8 @@ pub enum HistoryKind {
         old: String,
         /// New nick.
         new: String,
+        /// Channels we share with them; see [`HistoryKind::QuitMsg`].
+        channels: Vec<String>,
     },
     /// A mode change.
     Mode {

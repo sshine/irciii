@@ -95,6 +95,7 @@ mod tests {
         let mut ctx = HookCtx::new("sshine");
         let event = HistoryItem::now(HistoryKind::Privmsg {
             nick: "n_ko".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "see https://kampffrosch94.github.io/posts/hotreloading_rust/ for details".into(),
         });
@@ -114,6 +115,7 @@ mod tests {
         let mut ctx = HookCtx::new("sshine");
         let event = HistoryItem::now(HistoryKind::Privmsg {
             nick: "sshine".into(),
+            userhost: None,
             target: "#diku".into(),
             text: "https://example.org".into(),
         });
