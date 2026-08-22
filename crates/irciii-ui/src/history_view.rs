@@ -49,6 +49,12 @@ fn lines_from_bottom(state: &mut UiState, width: u16, opts: &RenderOpts, limit: 
 /// anchor the view while scrolled: new arrivals grow the offset so the
 /// visible lines stay put (and the status bar's "below" count grows).
 pub fn clamp_scroll(state: &mut UiState, area_width: u16, area_height: u16) {
+    // Measuring into a zero-width viewport asks items to render into no
+    // columns at all, which the logo's image fit cannot answer. There is
+    // nothing to clamp against either, so leave the offset alone.
+    if area_width == 0 || area_height == 0 {
+        return;
+    }
     let opts = RenderOpts::from_state(state);
     refresh_heights(state, area_width);
     if state.scroll_offset > 0 {
@@ -212,6 +218,21 @@ mod tests {
         state.opts_gen += 1;
         assert!(drawn(&mut state, area).is_empty());
         assert_eq!(state.scroll_offset, 0, "nothing to scroll through");
+    }
+
+    #[test]
+    fn a_zero_size_viewport_is_left_alone() {
+        // A terminal can report 0 columns (a detached or resizing pty). The
+        // logo's image fit cannot render into no columns, so neither pass may
+        // measure anything.
+        let mut state = state_with_noise();
+        state.history.push(HistoryItem::now(HistoryKind::Logo));
+        state.heights.push(None);
+        state.scroll_offset = 3;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 0, 0));
+        clamp_scroll(&mut state, 0, 0);
+        render(&mut state, Rect::new(0, 0, 0, 0), &mut buf);
+        assert_eq!(state.scroll_offset, 3, "nothing to clamp against");
     }
 
     #[test]
