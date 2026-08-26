@@ -317,6 +317,29 @@ fn submit_line(state: &mut UiState, line: &str) {
                 .pending
                 .push(ClientToDaemon::Command(ClientCommand::Who { mask }));
         }
+        InputAction::PartActive { reason } => match state.active_target_info() {
+            Some(t) if t.kind == TargetKind::Channel => {
+                let channel = t.name.clone();
+                state
+                    .pending
+                    .push(ClientToDaemon::Command(ClientCommand::Part {
+                        channel,
+                        reason,
+                    }));
+            }
+            Some(_) => emit_local(
+                state,
+                HistoryKind::Error {
+                    text: "cannot part a query buffer (bare /query closes it)".into(),
+                },
+            ),
+            None => emit_local(
+                state,
+                HistoryKind::Error {
+                    text: "no active channel to part (/part <channel> [reason])".into(),
+                },
+            ),
+        },
         InputAction::Command(cmd) => {
             // Opening a target focuses it, once the daemon reports it exists.
             match &cmd {
@@ -973,6 +996,33 @@ mod tests {
         submit_line_of(&mut state, "/query n_ko");
         apply_msg(&mut state, &DaemonToClient::State(snapshot));
         assert_eq!(state.active_target_name(), "n_ko");
+    }
+
+    #[test]
+    fn bare_part_leaves_the_active_channel_but_not_a_query() {
+        let mut state = state_with_channel();
+        submit_line_of(&mut state, "/part bye");
+        assert_eq!(
+            state.pending,
+            vec![ClientToDaemon::Command(ClientCommand::Part {
+                channel: "#diku".into(),
+                reason: Some("bye".into()),
+            })]
+        );
+
+        // A query has nothing to part: say so rather than send anything.
+        state.pending.clear();
+        state
+            .snapshot
+            .targets
+            .push(target("n_ko", TargetKind::Query));
+        state.set_active_target(2);
+        submit_line_of(&mut state, "/part");
+        assert!(state.pending.is_empty());
+        assert!(matches!(
+            state.history.last().map(|item| &item.kind),
+            Some(HistoryKind::Error { .. })
+        ));
     }
 
     #[test]

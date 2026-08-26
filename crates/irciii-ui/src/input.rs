@@ -10,6 +10,12 @@ pub enum InputAction {
     Command(ClientCommand),
     /// Say text in the active target (input without a leading `/`).
     Say(String),
+    /// Leave the active channel (`/part` without a channel); the app fills in
+    /// the name, and says so when the active target is not a channel.
+    PartActive {
+        /// Optional part reason.
+        reason: Option<String>,
+    },
     /// Detach the client, keep the daemon.
     Detach,
     /// Exit client and daemon (`/exit`, `/quit`).
@@ -52,7 +58,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("names", "[channel] — list who is in a channel"),
     ("nick", "<nick> — change nick"),
     ("notice", "<target> <text> — send a notice"),
-    ("part", "<channel> [reason] — leave a channel"),
+    (
+        "part",
+        "[channel] [reason] — leave a channel (default: the active one)",
+    ),
     ("query", "<nick> — open a query buffer"),
     ("quit", "same as /exit"),
     ("quote", "<raw line> — send a raw IRC line"),
@@ -310,17 +319,22 @@ pub fn parse(line: &str) -> InputAction {
             }),
             _ => InputAction::Error("usage: /join <channel> [key]".into()),
         },
-        "part" => match args2(rest) {
-            Some((channel, reason)) => InputAction::Command(ClientCommand::Part {
-                channel,
-                reason: Some(reason),
-            }),
-            None if !rest.is_empty() => InputAction::Command(ClientCommand::Part {
-                channel: arg(),
-                reason: None,
-            }),
-            None => InputAction::Error("usage: /part <channel> [reason]".into()),
-        },
+        // A first word that names a channel is the channel; anything else is
+        // a reason for leaving the active one, as in irssi.
+        "part" => {
+            let (first, reason) = match args2(rest) {
+                Some((first, reason)) => (first, Some(reason)),
+                None => (arg(), None),
+            };
+            if is_channel(&first) {
+                InputAction::Command(ClientCommand::Part {
+                    channel: first,
+                    reason,
+                })
+            } else {
+                InputAction::PartActive { reason: opt() }
+            }
+        }
         "nick" if !rest.is_empty() => InputAction::Command(ClientCommand::Nick { nick: arg() }),
         "msg" => match args2(rest) {
             Some((target, text)) => InputAction::Command(ClientCommand::Msg { target, text }),
@@ -461,6 +475,32 @@ mod tests {
             })
         );
         assert!(matches!(parse("/msg n_ko"), InputAction::Error(_)));
+    }
+
+    #[test]
+    fn part_names_a_channel_or_leaves_the_active_one() {
+        assert_eq!(
+            parse("/part #diku bye"),
+            InputAction::Command(ClientCommand::Part {
+                channel: "#diku".into(),
+                reason: Some("bye".into()),
+            })
+        );
+        assert_eq!(
+            parse("/part #diku"),
+            InputAction::Command(ClientCommand::Part {
+                channel: "#diku".into(),
+                reason: None,
+            })
+        );
+        assert_eq!(parse("/part"), InputAction::PartActive { reason: None });
+        // Without a channel the whole rest is the reason, not a channel name.
+        assert_eq!(
+            parse("/part gone fishing"),
+            InputAction::PartActive {
+                reason: Some("gone fishing".into()),
+            }
+        );
     }
 
     #[test]
