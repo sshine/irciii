@@ -27,6 +27,8 @@ pub struct RenderOpts {
     pub ignores: Vec<irciii_proto::ignore::IgnoreRule>,
     /// Wall clock used to judge `-time` rules, so an expiry un-hides lines.
     pub now_ms: i64,
+    /// Name of the active target; messages belonging to any other one name it.
+    pub active_target: String,
 }
 
 impl Default for RenderOpts {
@@ -37,6 +39,7 @@ impl Default for RenderOpts {
             viewport_rows: 24,
             ignores: Vec::new(),
             now_ms: 0,
+            active_target: String::new(),
         }
     }
 }
@@ -50,6 +53,7 @@ impl RenderOpts {
             viewport_rows: state.viewport_height,
             ignores: state.snapshot.ignores.clone(),
             now_ms: chrono::Utc::now().timestamp_millis(),
+            active_target: state.active_target_name().to_string(),
         }
     }
 }
@@ -64,6 +68,23 @@ fn nick_style(nick: &str, opts: &RenderOpts) -> Style {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
+    }
+}
+
+/// The target a message line belongs to: the channel it was sent to, or, for
+/// a private message, whichever party is not us.
+fn line_target<'a>(target: &'a str, nick: &'a str, own_nick: &str) -> &'a str {
+    if target == own_nick { nick } else { target }
+}
+
+/// `":target"` for a line belonging to another target than the active one.
+/// Only the active target is left unnamed, so a merged log stays readable.
+fn target_suffix(target: &str, nick: &str, opts: &RenderOpts) -> String {
+    let target = line_target(target, nick, &opts.own_nick);
+    if target.eq_ignore_ascii_case(&opts.active_target) {
+        String::new()
+    } else {
+        format!(":{target}")
     }
 }
 
@@ -101,30 +122,48 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         _ => {}
     }
     let (gutter_spans, text, text_style) = match &item.kind {
-        HistoryKind::Privmsg { nick, text, .. } => (
+        HistoryKind::Privmsg {
+            nick, text, target, ..
+        } => (
             vec![
                 Span::styled(format!("{ts} "), dim()),
                 Span::styled("<", bold()),
                 Span::styled(nick.clone(), nick_style(nick, opts)),
+                Span::styled(target_suffix(target, nick, opts), dim()),
                 Span::styled(">", bold()),
                 Span::raw(" "),
             ],
             text.clone(),
             Style::default(),
         ),
-        HistoryKind::Action { nick, text, .. } => (
+        HistoryKind::Action {
+            nick, text, target, ..
+        } => (
             vec![
                 Span::styled(format!("{ts} "), dim()),
                 Span::styled(" * ", bold()),
-                Span::styled(format!("{nick} "), nick_style(nick, opts)),
+                Span::styled(nick.clone(), nick_style(nick, opts)),
+                Span::styled(target_suffix(target, nick, opts), dim()),
+                Span::raw(" "),
             ],
             text.clone(),
             Style::default(),
         ),
-        HistoryKind::Notice { from, text, .. } => (
+        HistoryKind::Notice {
+            from, text, target, ..
+        } => (
             vec![
                 Span::styled(format!("{ts} "), dim()),
-                Span::styled(format!("-{from}- "), crate::styles::accent()),
+                // A notice to us belongs to no target of its own (server
+                // notices among them), so only a channel one names a target.
+                Span::styled(
+                    if irciii_proto::ignore::is_channel(target) {
+                        format!("-{from}{}- ", target_suffix(target, from, opts))
+                    } else {
+                        format!("-{from}- ")
+                    },
+                    crate::styles::accent(),
+                ),
             ],
             text.clone(),
             Style::default(),
@@ -698,7 +737,10 @@ mod tests {
                    the quality of what you make?"
                 .into(),
         });
-        let opts = RenderOpts::default();
+        let opts = RenderOpts {
+            active_target: "#diku".into(),
+            ..RenderOpts::default()
+        };
         let lines = plain(&render_item(&it, 60, &opts));
         assert!(lines.len() > 1, "must wrap at width 60: {lines:?}");
         assert!(
@@ -720,6 +762,52 @@ mod tests {
         for line in &lines {
             assert!(line.chars().count() <= 60, "line too long: {line:?}");
         }
+    }
+
+    /// A session in `#foo` and `#bar`, focused on `active`.
+    fn state_focused_on(active: &str) -> irciii_proto::ui_state::UiState {
+        use irciii_proto::wire::{TargetInfo, TargetKind};
+        let mut state = irciii_proto::ui_state::UiState::new();
+        state.snapshot.nick = "sshine".into();
+        state.snapshot.targets = ["#foo", "#bar"]
+            .into_iter()
+            .map(|name| TargetInfo {
+                name: name.to_string(),
+                kind: TargetKind::Channel,
+                modes: String::new(),
+                topic: None,
+                members: Vec::new(),
+            })
+            .collect();
+        state.active_target = 1 + state
+            .snapshot
+            .targets
+            .iter()
+            .position(|t| t.name == active)
+            .expect("a target to focus");
+        state
+    }
+
+    #[test]
+    fn a_message_outside_the_active_target_names_its_target() {
+        let msg = |target: &str| {
+            item(HistoryKind::Privmsg {
+                nick: "john".into(),
+                userhost: None,
+                target: target.into(),
+                text: "hello".into(),
+            })
+        };
+        let opts = RenderOpts::from_state(&state_focused_on("#foo"));
+        let elsewhere = plain(&render_item(&msg("#bar"), 80, &opts));
+        assert!(elsewhere[0].contains("<john:#bar> hello"), "{elsewhere:?}");
+        let here = plain(&render_item(&msg("#foo"), 80, &opts));
+        assert!(here[0].contains("<john> hello"), "{here:?}");
+
+        // A query is a target like any other: a message addressed to us is
+        // named by the other party while we are looking elsewhere.
+        let query = plain(&render_item(&msg("sshine"), 80, &opts));
+        assert!(query[0].contains("<john:john> hello"), "{query:?}");
     }
 
     #[test]

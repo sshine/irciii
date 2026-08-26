@@ -110,17 +110,26 @@ impl UiState {
         }
     }
 
+    /// Focus a target by index. Lines belonging to other targets render with
+    /// their target named, so a change here invalidates the height cache.
+    pub fn set_active_target(&mut self, index: usize) {
+        if self.active_target != index {
+            self.active_target = index;
+            self.opts_gen += 1;
+        }
+    }
+
     /// Cycle to the next target. "(status)" is only part of the cycle when
     /// there are no channels or queries; otherwise cycling wraps within them.
     pub fn cycle_target(&mut self) {
         let targets = self.snapshot.targets.len();
-        self.active_target = if targets == 0 {
+        self.set_active_target(if targets == 0 {
             0
         } else if self.active_target >= targets {
             1
         } else {
             self.active_target + 1
-        };
+        });
     }
 }
 
@@ -163,5 +172,24 @@ mod tests {
         assert_eq!(st.active_target_name(), "n_ko");
         st.cycle_target();
         assert_eq!(st.active_target_name(), "#diku", "wraps within targets");
+    }
+
+    #[test]
+    fn focusing_another_target_invalidates_rendered_heights() {
+        // Lines outside the active target render with their target named, so
+        // the cached heights belong to whatever was focused when measured.
+        let mut st = UiState::new();
+        st.snapshot.targets.push(TargetInfo {
+            name: "#diku".into(),
+            kind: TargetKind::Channel,
+            modes: "+n".into(),
+            topic: None,
+            members: Vec::new(),
+        });
+        let measured = st.opts_gen;
+        st.cycle_target();
+        assert_eq!(st.opts_gen, measured + 1);
+        st.cycle_target();
+        assert_eq!(st.opts_gen, measured + 1, "no move, nothing to re-measure");
     }
 }

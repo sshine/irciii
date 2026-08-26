@@ -360,14 +360,15 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
                 state.scroll_offset = 0;
             }
             state.snapshot = snapshot.clone();
-            // Keep the active target index in range if targets disappeared.
+            // Keep the active target index in range if targets disappeared;
+            // the index then names whichever target took the slot.
             if state.active_target > state.snapshot.targets.len() {
-                state.active_target = 0;
+                state.set_active_target(0);
             }
             // (status) is not part of the cycle while targets exist: follow
             // the first target whenever we're sitting on (status).
             if state.active_target == 0 && !state.snapshot.targets.is_empty() {
-                state.active_target = 1;
+                state.set_active_target(1);
             }
         }
         DaemonToClient::History { items } => {
