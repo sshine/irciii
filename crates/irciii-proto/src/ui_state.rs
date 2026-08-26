@@ -74,6 +74,9 @@ pub struct UiState {
     /// Index into the targets list; 0 is the synthetic "(status)" target, so
     /// `active_target == n` means `snapshot.targets[n - 1]` for `n > 0`.
     pub active_target: usize,
+    /// Target to focus once the daemon reports it, set by `/join` and
+    /// `/query`: the target does not exist until the snapshot says it does.
+    pub pending_focus: Option<String>,
     /// Timestamp format for history lines and the status bar clock.
     pub ts_format: String,
     /// Outbound messages queued by the worker, drained to the socket by the host.
@@ -107,6 +110,30 @@ impl UiState {
                 .get(self.active_target - 1)
                 .map(|t| t.name.as_str())
                 .unwrap_or("(status)")
+        }
+    }
+
+    /// The active target, or `None` on "(status)".
+    pub fn active_target_info(&self) -> Option<&crate::wire::TargetInfo> {
+        self.active_target
+            .checked_sub(1)
+            .and_then(|i| self.snapshot.targets.get(i))
+    }
+
+    /// Focus the target named by [`Self::pending_focus`] once it shows up in
+    /// the snapshot, so `/join` and `/query` land on what they opened.
+    pub fn take_pending_focus(&mut self) {
+        let Some(name) = self.pending_focus.clone() else {
+            return;
+        };
+        if let Some(index) = self
+            .snapshot
+            .targets
+            .iter()
+            .position(|t| t.name.eq_ignore_ascii_case(&name))
+        {
+            self.pending_focus = None;
+            self.set_active_target(index + 1);
         }
     }
 

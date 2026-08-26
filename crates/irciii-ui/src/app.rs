@@ -79,9 +79,7 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
             // against the active channel's members.
             let completed = crate::input::complete_command(&state.input).or_else(|| {
                 let members = state
-                    .active_target
-                    .checked_sub(1)
-                    .and_then(|i| state.snapshot.targets.get(i))
+                    .active_target_info()
                     .map(|t| t.members.clone())
                     .unwrap_or_default();
                 crate::input::complete_nick(&state.input, &members)
@@ -312,9 +310,7 @@ fn submit_line(state: &mut UiState, line: &str) {
         // stays bare (the server decides what a plain WHO means).
         InputAction::Command(ClientCommand::Who { mask: None }) => {
             let mask = state
-                .active_target
-                .checked_sub(1)
-                .and_then(|i| state.snapshot.targets.get(i))
+                .active_target_info()
                 .filter(|t| t.kind == TargetKind::Channel)
                 .map(|t| t.name.clone());
             state
@@ -322,6 +318,14 @@ fn submit_line(state: &mut UiState, line: &str) {
                 .push(ClientToDaemon::Command(ClientCommand::Who { mask }));
         }
         InputAction::Command(cmd) => {
+            // Opening a target focuses it, once the daemon reports it exists.
+            match &cmd {
+                ClientCommand::Join { channel, .. } => {
+                    state.pending_focus = Some(channel.clone());
+                }
+                ClientCommand::Query { target } => state.pending_focus = Some(target.clone()),
+                _ => {}
+            }
             state.pending.push(ClientToDaemon::Command(cmd));
         }
         InputAction::Detach => {
@@ -370,6 +374,7 @@ pub fn apply_msg(state: &mut UiState, msg: &DaemonToClient) {
             if state.active_target == 0 && !state.snapshot.targets.is_empty() {
                 state.set_active_target(1);
             }
+            state.take_pending_focus();
         }
         DaemonToClient::History { items } => {
             for (seq, item) in items {
@@ -931,6 +936,63 @@ mod tests {
             state.input, "/msg someone hi",
             "no completion past the command"
         );
+    }
+
+    /// Type `line` and submit it.
+    fn submit_line_of(state: &mut UiState, line: &str) {
+        for c in line.chars() {
+            handle_event(state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        handle_event(state, &key(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    /// A target as the daemon reports it.
+    fn target(name: &str, kind: TargetKind) -> TargetInfo {
+        TargetInfo {
+            name: name.into(),
+            kind,
+            modes: String::new(),
+            topic: None,
+            members: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn joining_and_querying_focus_what_they_opened() {
+        let mut state = state_with_channel();
+        submit_line_of(&mut state, "/join #rust");
+        // Nothing to focus until the daemon confirms the join.
+        assert_eq!(state.active_target_name(), "#diku");
+
+        let mut snapshot = state.snapshot.clone();
+        snapshot.targets.push(target("n_ko", TargetKind::Query));
+        snapshot.targets.push(target("#rust", TargetKind::Channel));
+        apply_msg(&mut state, &DaemonToClient::State(snapshot.clone()));
+        assert_eq!(state.active_target_name(), "#rust");
+
+        submit_line_of(&mut state, "/query n_ko");
+        apply_msg(&mut state, &DaemonToClient::State(snapshot));
+        assert_eq!(state.active_target_name(), "n_ko");
+    }
+
+    #[test]
+    fn leaving_the_active_target_falls_back_to_another() {
+        let mut state = state_with_channel();
+        let mut snapshot = state.snapshot.clone();
+        snapshot.targets.push(target("#rust", TargetKind::Channel));
+        apply_msg(&mut state, &DaemonToClient::State(snapshot.clone()));
+        state.set_active_target(2);
+        assert_eq!(state.active_target_name(), "#rust");
+
+        // The index outlives the target it named: it lands on whichever one
+        // took the slot, or on the last remaining target.
+        snapshot.targets.pop();
+        apply_msg(&mut state, &DaemonToClient::State(snapshot.clone()));
+        assert_eq!(state.active_target_name(), "#diku");
+
+        snapshot.targets.clear();
+        apply_msg(&mut state, &DaemonToClient::State(snapshot));
+        assert_eq!(state.active_target_name(), "(status)");
     }
 
     #[test]
