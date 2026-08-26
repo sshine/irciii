@@ -350,6 +350,18 @@ impl Session {
                     self.status("not connected").await;
                 }
             }
+            // A query buffer is ours alone, so closing one needs no server.
+            ClientCommand::Unquery { target } => {
+                let before = self.snapshot.targets.len();
+                self.snapshot.targets.retain(|t| {
+                    t.kind != TargetKind::Query || !t.name.eq_ignore_ascii_case(&target)
+                });
+                if self.snapshot.targets.len() == before {
+                    self.status(format!("no query with {target}")).await;
+                } else {
+                    self.push_state().await;
+                }
+            }
             // Ignoring is about what we display, so it works while offline.
             ClientCommand::Ignore(spec) => {
                 let id = self.next_ignore_id;
@@ -493,6 +505,7 @@ impl Session {
                     },
                     ClientCommand::Connect { .. }
                     | ClientCommand::Disconnect
+                    | ClientCommand::Unquery { .. }
                     | ClientCommand::Ignore(_)
                     | ClientCommand::Unignore { .. } => {
                         unreachable!("handled above")
@@ -1066,6 +1079,40 @@ mod tests {
         let snapshot = snapshot_with(vec![channel("#diku", &["sshine", "n_ko"])]);
         let part: Message = ":n_ko!~n@host PART #diku".parse().expect("parses");
         assert!(shared_channels(&snapshot, &part).is_empty());
+    }
+
+    #[tokio::test]
+    async fn unquery_closes_only_the_named_query() {
+        let (tx, _rx) = mpsc::channel(64);
+        let mut session = Session::new(tx);
+        session.snapshot = snapshot_with(vec![
+            channel("#diku", &["sshine"]),
+            TargetInfo {
+                kind: TargetKind::Query,
+                ..channel("n_ko", &[])
+            },
+        ]);
+
+        // A channel of the same name is not a query and stays put.
+        session
+            .handle_command(ClientCommand::Unquery {
+                target: "#diku".into(),
+            })
+            .await;
+        assert_eq!(session.snapshot.targets.len(), 2);
+
+        session
+            .handle_command(ClientCommand::Unquery {
+                target: "N_KO".into(),
+            })
+            .await;
+        let names: Vec<&str> = session
+            .snapshot
+            .targets
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["#diku"], "nicks compare case-insensitively");
     }
 
     fn spec_for(mask: &str) -> irciii_proto::ignore::IgnoreSpec {

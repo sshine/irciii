@@ -20,6 +20,9 @@ pub enum InputAction {
     Detach,
     /// Exit client and daemon (`/exit`, `/quit`).
     Exit(Option<String>),
+    /// Close the active query (`/query` without a nick); with no query active
+    /// it shows what `/query` wants instead.
+    CloseQuery,
     /// Show the command overview (`/help`).
     Help,
     /// Show the active ignore rules (bare `/ignore`).
@@ -353,6 +356,7 @@ pub fn parse(line: &str) -> InputAction {
             None => InputAction::Error("usage: /mode <target> [modes]".into()),
         },
         "query" if !rest.is_empty() => InputAction::Command(ClientCommand::Query { target: arg() }),
+        "query" => InputAction::CloseQuery,
         "names" => InputAction::Command(ClientCommand::Names { channel: opt() }),
         "topic" => match args2(rest) {
             Some((channel, topic)) => InputAction::Command(ClientCommand::Topic {
@@ -501,6 +505,17 @@ mod tests {
                 reason: Some("gone fishing".into()),
             }
         );
+    }
+
+    #[test]
+    fn query_opens_with_a_nick_and_closes_without_one() {
+        assert_eq!(
+            parse("/query n_ko"),
+            InputAction::Command(ClientCommand::Query {
+                target: "n_ko".into(),
+            })
+        );
+        assert_eq!(parse("/query"), InputAction::CloseQuery);
     }
 
     #[test]

@@ -177,6 +177,13 @@ pub enum HistoryKind {
     },
     /// The `/help` command overview, rendered as one block.
     Help,
+    /// One command's `/help` entry, shown when a command is given without the
+    /// arguments it needs. Carries only the command name: the summary comes
+    /// from the client's command table, so the two can never disagree.
+    CommandHelp {
+        /// Command name, without the leading slash.
+        command: String,
+    },
     /// The `/ignore` listing, rendered as one block. Carries no payload: like
     /// [`HistoryKind::Help`] it renders from current state, so a listing left
     /// in the scrollback keeps showing the rules that are actually in force.

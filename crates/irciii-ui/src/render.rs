@@ -112,6 +112,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
     match &item.kind {
         HistoryKind::Whois(info) => return render_whois(info, width),
         HistoryKind::Help => return render_help(),
+        HistoryKind::CommandHelp { command } => return render_command_help(command),
         HistoryKind::IgnoreList => return render_ignore_list(opts),
         HistoryKind::NamesReply { channel, names, .. } => {
             return render_names(channel, names, width);
@@ -245,6 +246,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
         HistoryKind::Whois(_)
         | HistoryKind::Who { .. }
         | HistoryKind::Help
+        | HistoryKind::CommandHelp { .. }
         | HistoryKind::IgnoreList
         | HistoryKind::NamesReply { .. }
         | HistoryKind::Motd { .. }
@@ -565,6 +567,24 @@ fn render_help() -> Vec<Line<'static>> {
     ]));
     lines.push(Line::from(Span::styled("└".to_string(), label)));
     lines
+}
+
+/// Render one command's `/help` entry, in the same columns the `/help` block
+/// uses.
+fn render_command_help(command: &str) -> Vec<Line<'static>> {
+    let Some((name, summary)) = crate::input::COMMANDS
+        .iter()
+        .find(|(name, _)| *name == command)
+    else {
+        return vec![Line::from(Span::styled(
+            format!("unknown command: /{command}"),
+            Style::default().fg(Color::Red),
+        ))];
+    };
+    vec![Line::from(vec![
+        Span::styled(format!("/{name:<12}"), bold()),
+        Span::raw((*summary).to_string()),
+    ])]
 }
 
 /// Render the server MOTD as a card (cleared by `/clear`).
@@ -1096,6 +1116,18 @@ mod tests {
             ..opts
         };
         assert_eq!(render_item(&join("#rust"), 80, &shown).len(), 1);
+    }
+
+    #[test]
+    fn one_command_help_line_comes_from_the_command_table() {
+        let lines = plain(&render_item(
+            &item(HistoryKind::CommandHelp {
+                command: "query".into(),
+            }),
+            80,
+            &RenderOpts::default(),
+        ));
+        assert_eq!(lines, vec!["/query       <nick> — open a query buffer"]);
     }
 
     #[test]

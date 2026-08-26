@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::history::HistoryItem;
 
 /// Protocol version; both sides send it in their `Hello` and refuse a mismatch.
-pub const PROTO_VERSION: u16 = 3;
+pub const PROTO_VERSION: u16 = 4;
 
 /// Messages sent from the client (TUI) to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +92,11 @@ pub enum ClientCommand {
     /// Open a query buffer with a nick.
     Query {
         /// The nick to query.
+        target: String,
+    },
+    /// Close a query buffer.
+    Unquery {
+        /// The nick whose query to close.
         target: String,
     },
     /// Request NAMES for a channel (or the current one).

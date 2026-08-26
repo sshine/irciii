@@ -359,6 +359,22 @@ fn submit_line(state: &mut UiState, line: &str) {
             state.pending.push(ClientToDaemon::Exit);
             state.should_quit = QuitKind::Exit;
         }
+        // Bare /query closes the query you are in; anywhere else there is no
+        // query to close, so it shows what it wants instead.
+        InputAction::CloseQuery => match state.active_target_info() {
+            Some(t) if t.kind == TargetKind::Query => {
+                let target = t.name.clone();
+                state
+                    .pending
+                    .push(ClientToDaemon::Command(ClientCommand::Unquery { target }));
+            }
+            _ => emit_local(
+                state,
+                HistoryKind::CommandHelp {
+                    command: "query".into(),
+                },
+            ),
+        },
         InputAction::Help => emit_local(state, HistoryKind::Help),
         InputAction::IgnoreList => emit_local(state, HistoryKind::IgnoreList),
         InputAction::Clear => {
@@ -1023,6 +1039,36 @@ mod tests {
             state.history.last().map(|item| &item.kind),
             Some(HistoryKind::Error { .. })
         ));
+    }
+
+    #[test]
+    fn bare_query_closes_the_active_query_and_otherwise_shows_its_usage() {
+        let mut state = state_with_channel();
+        submit_line_of(&mut state, "/query");
+        assert!(state.pending.is_empty(), "no query to close in a channel");
+        assert!(matches!(
+            state.history.last().map(|item| &item.kind),
+            Some(HistoryKind::CommandHelp { command }) if command == "query"
+        ));
+
+        state
+            .snapshot
+            .targets
+            .push(target("n_ko", TargetKind::Query));
+        state.set_active_target(2);
+        submit_line_of(&mut state, "/query");
+        assert_eq!(
+            state.pending,
+            vec![ClientToDaemon::Command(ClientCommand::Unquery {
+                target: "n_ko".into(),
+            })]
+        );
+
+        // Once the daemon drops it, the focus falls back to what is left.
+        let mut snapshot = state.snapshot.clone();
+        snapshot.targets.pop();
+        apply_msg(&mut state, &DaemonToClient::State(snapshot));
+        assert_eq!(state.active_target_name(), "#diku");
     }
 
     #[test]
