@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::history::HistoryItem;
 
 /// Protocol version; both sides send it in their `Hello` and refuse a mismatch.
-pub const PROTO_VERSION: u16 = 4;
+pub const PROTO_VERSION: u16 = 5;
 
 /// Messages sent from the client (TUI) to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -149,6 +149,14 @@ pub enum HistoryKind {
         /// The line text.
         text: String,
     },
+    /// A registration numeric: the welcome block, ISUPPORT, and the LUSERS
+    /// counts a server sends on connect. Renders like a
+    /// [`HistoryKind::ServerLine`], but `/clear` takes it out of the log,
+    /// since it describes the moment of connecting and nothing since.
+    ServerInfo {
+        /// The line text.
+        text: String,
+    },
     /// A local client status line (irssi's `-!-` style).
     ClientStatus {
         /// The line text.
@@ -196,7 +204,7 @@ pub enum HistoryKind {
 
 impl HistoryKind {
     /// Whether this item is a *card*: a structured, block-rendered reply
-    /// (no timestamp gutter, bordered) that `/clear` removes from the log.
+    /// (no timestamp gutter, bordered).
     /// Cards: whois, who, names, motd, help, ignore list.
     pub fn is_card(&self) -> bool {
         matches!(
@@ -208,6 +216,13 @@ impl HistoryKind {
                 | HistoryKind::NamesReply { .. }
                 | HistoryKind::Motd { .. }
         )
+    }
+
+    /// Whether `/clear` removes this item from the log: every card, plus the
+    /// registration numerics, which are a block of connect-time replies in
+    /// everything but shape.
+    pub fn is_clearable(&self) -> bool {
+        self.is_card() || matches!(self, HistoryKind::ServerInfo { .. })
     }
 }
 

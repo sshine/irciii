@@ -27,7 +27,7 @@ pub enum InputAction {
     Help,
     /// Show the active ignore rules (bare `/ignore`).
     IgnoreList,
-    /// Remove clearable blocks (whois, help, ...) from the log (`/clear`).
+    /// Remove clearable blocks (whois, help, connect numerics) (`/clear`).
     Clear,
     /// Local error (bad syntax, unknown command).
     Error(String),
@@ -38,7 +38,7 @@ pub enum InputAction {
 pub const COMMANDS: &[(&str, &str)] = &[
     (
         "clear",
-        "remove cards (whois/who/names/motd/help/ignores) from the log",
+        "remove cards (whois/who/names/motd/help/ignores) and connect noise",
     ),
     (
         "connect",

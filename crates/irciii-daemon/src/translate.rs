@@ -4,6 +4,17 @@
 use irc::proto::{Command, Message, Response};
 use irciii_proto::history::HistoryKind;
 
+/// Numerics the server sends while completing registration: the welcome
+/// block (001-005), the LUSERS counts (251-255, 265, 266) and the connection
+/// stats line (250). `/clear` takes them out of the log, like the MOTD they
+/// lead into.
+const REGISTRATION_NUMERICS: &[u16] = &[1, 2, 3, 4, 5, 250, 251, 252, 253, 254, 255, 265, 266];
+
+/// The text of a numeric reply: our own nick (args[0]) dropped, rest joined.
+fn numeric_text(args: &[String]) -> String {
+    args.iter().skip(1).cloned().collect::<Vec<_>>().join(" ")
+}
+
 /// Nickname of a message's sender, falling back to the server prefix or "?".
 fn source(message: &Message) -> String {
     message
@@ -121,9 +132,26 @@ pub fn translate(message: &Message) -> Option<HistoryKind> {
             }
         }
         Command::Response(Response::RPL_ENDOFNAMES, _) => return None,
+        // Numerics the irc crate does not model arrive as `Raw`; a
+        // registration one still belongs in the same block.
+        Command::Raw(cmd, args)
+            if cmd
+                .parse()
+                .is_ok_and(|code| REGISTRATION_NUMERICS.contains(&code)) =>
+        {
+            HistoryKind::ServerInfo {
+                text: numeric_text(args),
+            }
+        }
+        Command::Response(response, args)
+            if REGISTRATION_NUMERICS.contains(&(*response as u16)) =>
+        {
+            HistoryKind::ServerInfo {
+                text: numeric_text(args),
+            }
+        }
         Command::Response(_, args) => HistoryKind::ServerLine {
-            // Drop our own nick (args[0]) from numeric replies; join the rest.
-            text: args.iter().skip(1).cloned().collect::<Vec<_>>().join(" "),
+            text: numeric_text(args),
         },
         Command::ERROR(text) => HistoryKind::Error { text: text.clone() },
         other => HistoryKind::ServerLine {
@@ -224,6 +252,35 @@ mod tests {
     #[test]
     fn ping_is_dropped() {
         assert_eq!(translate(&msg("PING :irc.libera.chat")), None);
+    }
+
+    #[test]
+    fn registration_numerics_become_clearable_lines() {
+        assert_eq!(
+            translate(&msg(
+                ":uranium.libera.chat 001 sshine :Welcome to Libera.Chat"
+            )),
+            Some(HistoryKind::ServerInfo {
+                text: "Welcome to Libera.Chat".into()
+            })
+        );
+        // 250 is outside the Response enum of the irc crate: it comes as Raw.
+        assert_eq!(
+            translate(&msg(
+                ":uranium.libera.chat 250 sshine :Highest connection count: 2253"
+            )),
+            Some(HistoryKind::ServerInfo {
+                text: "Highest connection count: 2253".into()
+            })
+        );
+        assert_eq!(
+            translate(&msg(
+                ":uranium.libera.chat 403 sshine #nope :No such channel"
+            )),
+            Some(HistoryKind::ServerLine {
+                text: "#nope No such channel".into()
+            })
+        );
     }
 
     #[test]

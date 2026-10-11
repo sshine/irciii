@@ -378,8 +378,8 @@ fn submit_line(state: &mut UiState, line: &str) {
         InputAction::Help => emit_local(state, HistoryKind::Help),
         InputAction::IgnoreList => emit_local(state, HistoryKind::IgnoreList),
         InputAction::Clear => {
-            // Remove clearable blocks (whois, help) from the log entirely.
-            state.history.retain(|item| !item.kind.is_card());
+            // Remove clearable blocks (whois, help, connect numerics) entirely.
+            state.history.retain(|item| !item.kind.is_clearable());
             state.heights.clear();
             state.heights.resize(state.history.len(), None);
             state.anchored_len = state.history.len();
@@ -748,16 +748,26 @@ mod tests {
         emit_local(&mut state, HistoryKind::Help);
         emit_local(
             &mut state,
+            HistoryKind::ServerInfo {
+                text: "Welcome to Libera.Chat".into(),
+            },
+        );
+        emit_local(
+            &mut state,
             HistoryKind::ClientStatus {
                 text: "keep".into(),
             },
         );
-        assert_eq!(state.history.len(), 2);
+        assert_eq!(state.history.len(), 3);
         for c in "/clear".chars() {
             handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
         }
         handle_event(&mut state, &key(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(state.history.len(), 1, "help block removed, status kept");
+        assert_eq!(
+            state.history.len(),
+            1,
+            "help block and welcome line removed, status kept"
+        );
         assert!(matches!(
             state.history[0].kind,
             HistoryKind::ClientStatus { .. }

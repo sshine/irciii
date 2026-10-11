@@ -236,7 +236,7 @@ pub fn render_item(item: &HistoryItem, width: u16, opts: &RenderOpts) -> Vec<Lin
             },
             crate::styles::ACCENT,
         ),
-        HistoryKind::ServerLine { text } => (
+        HistoryKind::ServerLine { text } | HistoryKind::ServerInfo { text } => (
             vec![Span::styled(format!("{ts} "), dim())],
             text.clone(),
             dim(),
