@@ -64,6 +64,16 @@ dist version: (check-version version)
     done
     @ls -1 dist
 
+# Print the SRI hashes nix/binary.nix pins, read from the published release.
+# Local builds are not bit-identical to the ones CI publishes, so hashing dist/
+# would give values that never match what fetchurl downloads.
+release-hashes version:
+    @for target in {{release_targets}}; do \
+        url="https://github.com/sshine/irciii/releases/download/{{version}}/irciii-{{version}}-$target.tar.gz"; \
+        hash="$(nix store prefetch-file --json --hash-type sha256 "$url" | jq -r .hash)"; \
+        printf '"%s" = "%s";\n' "${target%%-*}-linux" "$hash"; \
+    done
+
 # Run CI checks locally
 ci: fmt-check lint test doc readme-check build
     @echo "All CI checks passed!"

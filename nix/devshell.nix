@@ -15,6 +15,7 @@
           pkgs.cargo-watch
           pkgs.cargo-insta
           pkgs.deadnix
+          pkgs.jq
           pkgs.stdenv.cc
           pkgs.just
           config.packages.cargo-readme
