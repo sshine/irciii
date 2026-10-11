@@ -22,8 +22,8 @@
       release = {
         version = "0.1.0";
         hashes = {
-          "x86_64-linux" = "sha256-41ixMIQTb7qXhnrErZqPGy4Zs1W1xeU/DL52mp0moWA=";
-          "aarch64-linux" = "sha256-GoQcagnC8Ru3tzDsRiiJTM0MvY7tyKnNWifmxavpmJo=";
+          "x86_64-linux" = "sha256-vepuQtixt+Nlc2aDcgKedPV0dTBawTUH2OYReUFTtPE=";
+          "aarch64-linux" = "sha256-ZAbNjzK7t1XkY0D5SvsCFA/BjQMEBjWXFvbp2uutnp0=";
         };
       };
 
