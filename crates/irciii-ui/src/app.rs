@@ -1,6 +1,6 @@
 //! The UI worker's update and render logic, operating on [`UiState`].
 
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use irciii_proto::history::{HistoryItem, HistoryKind};
 use irciii_proto::ui_state::{QuitKind, UiState};
 use irciii_proto::wire::{ClientCommand, ClientToDaemon, DaemonToClient, TargetKind};
@@ -24,6 +24,21 @@ fn emit_local(state: &mut UiState, kind: HistoryKind) {
 /// Page size for PgUp/PgDn: one viewport minus a line of overlap.
 fn page(state: &UiState) -> usize {
     state.viewport_height.saturating_sub(1).max(1) as usize
+}
+
+/// The promptui [`Input`] a key stands for, with every spelling of
+/// Ctrl+Backspace folded onto one. Only a terminal speaking the kitty
+/// keyboard protocol reports it as `Backspace`+CONTROL, which is all promptui
+/// knows; the rest send ^H (0x08), which crossterm reports as Ctrl+H, or ESC
+/// DEL, which it reports as Alt+Backspace. The last is also readline's
+/// backward-kill-word, so it does the same thing wherever it comes from.
+fn key_input(key: &KeyEvent) -> Input {
+    let ctrl_h = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('h');
+    let alt_backspace = key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Backspace;
+    if ctrl_h || alt_backspace {
+        return Input::DeleteWordBackward;
+    }
+    Input::from(*key)
 }
 
 /// Handle a terminal event.
@@ -64,7 +79,7 @@ pub fn handle_event(state: &mut UiState, event: &Event) {
     let browse_pos = state.input_history_pos;
     let before = browse_pos.is_some().then(|| state.input.clone());
 
-    match Input::from(*key) {
+    match key_input(key) {
         Input::PageUp => state.scroll_offset += page(state),
         Input::PageDown => {
             state.scroll_offset = state.scroll_offset.saturating_sub(page(state));
@@ -740,6 +755,32 @@ mod tests {
             },
         );
         assert!(state.modal.is_none());
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_a_word_in_every_spelling() {
+        let spellings = [
+            (KeyCode::Char('h'), KeyModifiers::CONTROL),
+            (KeyCode::Backspace, KeyModifiers::CONTROL),
+            (KeyCode::Backspace, KeyModifiers::ALT),
+        ];
+        for (code, modifiers) in spellings {
+            let mut state = state_with_channel();
+            for c in "hello world".chars() {
+                handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            handle_event(&mut state, &key(code, modifiers));
+            assert_eq!(state.input, "hello ");
+        }
+    }
+
+    #[test]
+    fn a_bare_h_is_still_typed() {
+        let mut state = state_with_channel();
+        for c in "oh".chars() {
+            handle_event(&mut state, &key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(state.input, "oh");
     }
 
     #[test]
