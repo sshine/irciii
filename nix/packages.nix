@@ -9,28 +9,17 @@
 {
   perSystem =
     { pkgs, lib, ... }:
-    let
-      buildCrate =
-        {
-          pname,
-          mainProgram ? pname,
-        }:
-        pkgs.rustPlatform.buildRustPackage {
-          inherit pname;
-          version = "0.1.0";
-          src = ../.;
-          cargoLock = {
-            lockFile = ../Cargo.lock;
-            allowBuiltinFetchGit = true;
-          };
-          buildAndTestSubdir = "crates/${pname}";
-          meta.mainProgram = mainProgram;
-        };
-    in
     rec {
-      packages = {
-        default = buildCrate { pname = "irciii"; };
-        conventional-commit-check = buildCrate { pname = "conventional-commit-check"; };
+      packages.default = pkgs.rustPlatform.buildRustPackage {
+        pname = "irciii";
+        version = "0.1.0";
+        src = ../.;
+        cargoLock = {
+          lockFile = ../Cargo.lock;
+          allowBuiltinFetchGit = true;
+        };
+        buildAndTestSubdir = "crates/irciii";
+        meta.mainProgram = "irciii";
       };
 
       checks.irciii = packages.default;

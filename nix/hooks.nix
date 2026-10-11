@@ -18,7 +18,7 @@
 
       # Reference treefmt by absolute store path: the `nix flake check` hk-check
       # sandbox runs the pre-commit hook without the devshell PATH, so a bare
-      # `treefmt` is not found there (the deadnix/conventional steps do the same).
+      # `treefmt` is not found there (the deadnix step does the same).
       treefmt = lib.getExe config.treefmt.build.wrapper;
     in
     {
@@ -49,10 +49,9 @@
           };
         };
 
-        # Conventional commits; policy knobs: --require-scope, --types feat,fix,...
-        "commit-msg".steps.conventional = {
-          check = "${lib.getExe config.packages.conventional-commit-check} {{commit_msg_file}}";
-        };
+        # hk runs this one itself, so no tool needs pinning. Note it has no
+        # equivalent of --require-scope; --allowed-types is the only policy knob.
+        "commit-msg".steps.conventional.builtin = config.hk-nix.builtins.check_conventional_commit;
       };
     };
 }

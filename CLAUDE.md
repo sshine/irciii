@@ -16,7 +16,6 @@ This is a Cargo workspace with crates under `crates/`:
 - **irciii-client**: The host process: terminal, TCP connection to the daemon, and the
   (optionally hot-reloaded) UI worker; `hot-reload` feature gates libloading
 - **irciii**: The CLI binary; spawns daemon + client, or `--attach <session-id>`
-- **conventional-commit-check**: The commit-msg git hook binary
 
 Constraints to preserve:
 
