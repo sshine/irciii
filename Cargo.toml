@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sshine/irciii"
@@ -16,10 +16,10 @@ unwrap_used = "deny"
 
 [workspace.dependencies]
 # Internal crates
-irciii-proto = { version = "0.1.0", path = "crates/irciii-proto" }
-irciii-daemon = { version = "0.1.0", path = "crates/irciii-daemon" }
-irciii-ui = { version = "0.1.0", path = "crates/irciii-ui" }
-irciii-client = { version = "0.1.0", path = "crates/irciii-client" }
+irciii-proto = { version = "0.2.0", path = "crates/irciii-proto" }
+irciii-daemon = { version = "0.2.0", path = "crates/irciii-daemon" }
+irciii-ui = { version = "0.2.0", path = "crates/irciii-ui" }
+irciii-client = { version = "0.2.0", path = "crates/irciii-client" }
 
 # UI
 promptui-core = { git = "https://github.com/sshine/promptui.git" }

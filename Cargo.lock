@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "irciii"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "irciii-client",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "irciii-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm",
  "futures",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "irciii-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "directories",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "irciii-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "postcard",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "irciii-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "crossterm",
